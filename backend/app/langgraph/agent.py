@@ -1,90 +1,52 @@
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
-from langchain_core.messages import SystemMessage
-from langgraph.errors import NodeInterrupt
-from langchain_core.tools import BaseTool
-from pydantic import BaseModel
-from .tools import tools
-from .state import AgentState
+import os
+from datetime import datetime
+
+from dotenv import load_dotenv
+from langchain_core.tools import tool
+from langchain_ollama import ChatOllama
+from langgraph.prebuilt import create_react_agent
+
+load_dotenv()
+
+configured_model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://192.168.87.160:11434")
 
 
-model = ChatOpenAI()
+@tool
+def current_time() -> str:
+    """Return the current server time in ISO format."""
+    print("### TOOL EXECUTED: current_time", flush=True)
+    return datetime.now().isoformat(timespec="seconds")
 
 
-def should_continue(state):
-    messages = state["messages"]
-    last_message = messages[-1]
-    if not last_message.tool_calls:
-        return END
-    else:
-        return "tools"
+tools = [current_time]
 
 
-class AnyArgsSchema(BaseModel):
-    # By not defining any fields and allowing extras,
-    # this schema will accept any input passed in.
-    class Config:
-        extra = "allow"
+def make_model():
+    return ChatOllama(
+        model=os.getenv("OLLAMA_MODEL", configured_model),
+        base_url=os.getenv("OLLAMA_BASE_URL", ollama_base_url),
+        temperature=0,
+        num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
+        disable_streaming="tool_calling",
+        model_kwargs={"think": False},
+    )
 
 
-class FrontendTool(BaseTool):
-    def __init__(self, name: str):
-        super().__init__(name=name, description="", args_schema=AnyArgsSchema)
-
-    def _run(self, *args, **kwargs):
-        # Since this is a frontend-only tool, it might not actually execute anything.
-        # Raise an interrupt or handle accordingly.
-        raise NodeInterrupt("This is a frontend tool call")
-
-    async def _arun(self, *args, **kwargs) -> str:
-        # Similarly handle async calls
-        raise NodeInterrupt("This is a frontend tool call")
-
-
-def get_tool_defs(config):
-    frontend_tools = [
-        {"type": "function", "function": tool}
-        for tool in config["configurable"]["frontend_tools"]
-    ]
-    return tools + frontend_tools
-
-
-def get_tools(config):
-    frontend_tools = [
-        FrontendTool(tool.name) for tool in config["configurable"]["frontend_tools"]
-    ]
-    return tools + frontend_tools
-
-
-async def call_model(state, config):
-    system = config["configurable"]["system"]
-
-    messages = [SystemMessage(content=system)] + state["messages"]
-    model_with_tools = model.bind_tools(get_tool_defs(config))
-    response = await model_with_tools.ainvoke(messages)
-    # We return a list, because this will get added to the existing list
-    return {"messages": response}
-
-
-async def run_tools(input, config, **kwargs):
-    tool_node = ToolNode(get_tools(config))
-    return await tool_node.ainvoke(input, config, **kwargs)
-
-
-# Define a new graph
-workflow = StateGraph(AgentState)
-
-workflow.add_node("agent", call_model)
-workflow.add_node("tools", run_tools)
-
-workflow.set_entry_point("agent")
-workflow.add_conditional_edges(
-    "agent",
-    should_continue,
-    ["tools", END],
+SYSTEM_PROMPT = (
+    "You are a private local assistant. "
+    "When the user asks for current time or server time, you must call current_time. "
+    "Do not answer time questions from memory."
 )
 
-workflow.add_edge("tools", "agent")
 
-assistant_ui_graph = workflow.compile()
+def build_graph(checkpointer=None):
+    return create_react_agent(
+        model=make_model(),
+        tools=tools,
+        prompt=SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+    )
+
+
+assistant_ui_graph = build_graph()

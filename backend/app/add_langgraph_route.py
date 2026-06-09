@@ -1,16 +1,18 @@
-from assistant_stream import create_run, RunController
+from uuid import uuid4
+from typing import Any, List, Literal, Optional, Union
+
+from assistant_stream import RunController, create_run
 from assistant_stream.serialization import DataStreamResponse
-from langchain_core.messages import (
-    HumanMessage,
-    AIMessageChunk,
-    AIMessage,
-    ToolMessage,
-    SystemMessage,
-    BaseMessage,
-)
 from fastapi import FastAPI
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from pydantic import BaseModel
-from typing import List, Literal, Union, Optional, Any
 
 
 class LanguageModelTextPart(BaseModel):
@@ -21,14 +23,14 @@ class LanguageModelTextPart(BaseModel):
 
 class LanguageModelImagePart(BaseModel):
     type: Literal["image"]
-    image: str  # Will handle URL or base64 string
+    image: str
     mimeType: Optional[str] = None
     providerMetadata: Optional[Any] = None
 
 
 class LanguageModelFilePart(BaseModel):
     type: Literal["file"]
-    data: str  # URL or base64 string
+    data: str
     mimeType: str
     providerMetadata: Optional[Any] = None
 
@@ -91,7 +93,7 @@ LanguageModelV1Message = Union[
 def convert_to_langchain_messages(
     messages: List[LanguageModelV1Message],
 ) -> List[BaseMessage]:
-    result = []
+    result: List[BaseMessage] = []
 
     for msg in messages:
         if msg.role == "system":
@@ -107,7 +109,6 @@ def convert_to_langchain_messages(
             result.append(HumanMessage(content=content))
 
         elif msg.role == "assistant":
-            # Handle both text and tool calls
             text_parts = [
                 p for p in msg.content if isinstance(p, LanguageModelTextPart)
             ]
@@ -142,6 +143,8 @@ class FrontendToolCall(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    id: Optional[str] = None
+    threadId: Optional[str] = None
     system: Optional[str] = ""
     tools: Optional[List[FrontendToolCall]] = []
     messages: List[LanguageModelV1Message]
@@ -150,15 +153,50 @@ class ChatRequest(BaseModel):
 def add_langgraph_route(app: FastAPI, graph, path: str):
     async def chat_completions(request: ChatRequest):
         inputs = convert_to_langchain_messages(request.messages)
+        thread_id = request.threadId or request.id or str(uuid4())
 
         async def run(controller: RunController):
             tool_calls = {}
             tool_calls_by_idx = {}
+            emitted_text = ""
+
+            def content_to_text(content: Any) -> str:
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict) and part.get("type") == "text":
+                            parts.append(str(part.get("text", "")))
+                    return "".join(parts)
+                return ""
+
+            def append_deduped_text(text: str):
+                nonlocal emitted_text
+
+                if not text:
+                    return
+
+                if text == emitted_text:
+                    return
+
+                if text.startswith(emitted_text):
+                    delta = text[len(emitted_text):]
+                    if delta:
+                        controller.append_text(delta)
+                        emitted_text += delta
+                    return
+
+                controller.append_text(text)
+                emitted_text += text
 
             async for msg, metadata in graph.astream(
                 {"messages": inputs},
                 {
                     "configurable": {
+                        "thread_id": thread_id,
                         "system": request.system,
                         "frontend_tools": request.tools,
                     }
@@ -166,24 +204,34 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 stream_mode="messages",
             ):
                 if isinstance(msg, ToolMessage):
-                    tool_controller = tool_calls[msg.tool_call_id]
-                    tool_controller.set_result(msg.content)
+                    tool_controller = tool_calls.get(msg.tool_call_id)
+                    if tool_controller is not None:
+                        tool_controller.set_result(str(msg.content))
+                    continue
 
                 if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
-                    if msg.content:
-                        controller.append_text(msg.content)
+                    append_deduped_text(content_to_text(msg.content))
 
-                    for chunk in msg.tool_call_chunks:
-                        if not chunk["index"] in tool_calls_by_idx:
+                    for chunk in getattr(msg, "tool_call_chunks", []) or []:
+                        idx = chunk.get("index")
+                        call_id = chunk.get("id")
+                        name = chunk.get("name")
+                        args = chunk.get("args") or ""
+
+                        if idx is None or not call_id or not name:
+                            continue
+
+                        if idx not in tool_calls_by_idx:
                             tool_controller = await controller.add_tool_call(
-                                chunk["name"], chunk["id"]
+                                name, call_id
                             )
-                            tool_calls_by_idx[chunk["index"]] = tool_controller
-                            tool_calls[chunk["id"]] = tool_controller
+                            tool_calls_by_idx[idx] = tool_controller
+                            tool_calls[call_id] = tool_controller
                         else:
-                            tool_controller = tool_calls_by_idx[chunk["index"]]
+                            tool_controller = tool_calls_by_idx[idx]
 
-                        tool_controller.append_args_text(chunk["args"])
+                        if args:
+                            tool_controller.append_args_text(str(args))
 
         return DataStreamResponse(create_run(run))
 

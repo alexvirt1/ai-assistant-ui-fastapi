@@ -17,6 +17,9 @@ langchain-openai = "^0.2.8"
 langgraph = "^0.2.46"
 python-dotenv = "^1.0.1"
 assistant-stream = "^0.0.5"
+langchain-ollama = "0.2.3"
+langgraph-checkpoint-postgres = "2.0.25"
+psycopg = {extras = ["binary", "pool"], version = "^3.3.4"}
 
 
 [tool.poetry.group.dev.dependencies]

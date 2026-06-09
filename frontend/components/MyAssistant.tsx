@@ -8,7 +8,7 @@ const MarkdownText = makeMarkdownText();
 
 export function MyAssistant() {
   const runtime = useEdgeRuntime({
-    api: "http://localhost:8000/api/chat",
+    api: "/api/chat",
     unstable_AISDKInterop: true,
   });
 
