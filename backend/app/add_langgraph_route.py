@@ -152,9 +152,22 @@ class ChatRequest(BaseModel):
 
 def add_langgraph_route(app: FastAPI, graph, path: str):
     async def chat_completions(request: ChatRequest):
-        inputs = convert_to_langchain_messages(request.messages)
-        thread_id = request.threadId or request.id or str(uuid4())
+        # inputs = convert_to_langchain_messages(request.messages)
+        all_inputs = convert_to_langchain_messages(request.messages)
 
+        inputs = []
+        for message in reversed(all_inputs):
+            if getattr(message, "type", None) == "human":
+                inputs = [message]
+                break
+
+        if not inputs and all_inputs:
+            inputs = [all_inputs[-1]]
+
+        thread_id = request.threadId or request.id or str(uuid4())
+        print(f"REQUEST id={request.id} threadId={request.threadId} LANGGRAPH thread_id={thread_id}",
+              flush=True,
+        )
         async def run(controller: RunController):
             tool_calls = {}
             tool_calls_by_idx = {}
