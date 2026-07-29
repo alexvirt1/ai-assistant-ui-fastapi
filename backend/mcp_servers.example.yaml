@@ -1,0 +1,25 @@
+# MCP servers. Copy to mcp_servers.yaml (or point MCP_SERVERS_CONFIG at a
+# file) and every tool each server exposes becomes available to the agent.
+#
+# ${ENV_VAR} values are read from the environment; a server referencing an
+# unset env var is skipped, and an unreachable server is logged and skipped —
+# neither breaks startup. ENABLED_TOOLS applies to MCP tool names too.
+#
+# Fields: name, transport (stdio | streamable_http | sse), prompt_hint (optional),
+#   stdio:            command, args, env, cwd
+#   streamable_http:  url, headers, timeout
+
+# Local server spawned as a subprocess (needs Node.js).
+- name: filesystem
+  transport: stdio
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  prompt_hint: Use the filesystem tools to read and write files under /tmp.
+
+# Remote server over streamable HTTP (disabled until GITHUB_TOKEN is set).
+# - name: github
+#   transport: streamable_http
+#   url: "https://api.githubcopilot.com/mcp/"
+#   headers:
+#     Authorization: "Bearer ${GITHUB_TOKEN}"
+#   prompt_hint: Use the GitHub tools for repository and issue questions.

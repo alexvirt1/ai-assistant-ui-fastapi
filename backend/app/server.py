@@ -8,6 +8,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from .add_langgraph_route import add_langgraph_route
 from .langgraph.agent import build_graph
+from .tools.mcp.loader import connect_mcp_servers
 
 load_dotenv()
 
@@ -18,6 +19,9 @@ checkpointer = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global checkpointer_cm, checkpointer
+
+    # Register tools from configured MCP servers before the graph is built.
+    await connect_mcp_servers()
 
     database_url = os.environ.get("DATABASE_URL")
     if database_url:

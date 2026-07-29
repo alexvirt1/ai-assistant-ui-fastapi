@@ -1,9 +1,9 @@
 import { cookies } from "next/headers";
 
+import { THREAD_COOKIE } from "@/lib/thread";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const THREAD_COOKIE = "assistant_thread_id";
 
 export async function POST(req: Request) {
   const body = await req.json();

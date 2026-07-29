@@ -231,17 +231,23 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                         name = chunk.get("name")
                         args = chunk.get("args") or ""
 
-                        if idx is None or not call_id or not name:
+                        if not call_id or not name:
                             continue
 
-                        if idx not in tool_calls_by_idx:
+                        # Providers that stream tool calls incrementally (OpenAI)
+                        # key the accumulation by index; Ollama delivers each call
+                        # complete in one chunk with index None, so fall back to
+                        # the call id.
+                        key = call_id if idx is None else idx
+
+                        if key not in tool_calls_by_idx:
                             tool_controller = await controller.add_tool_call(
                                 name, call_id
                             )
-                            tool_calls_by_idx[idx] = tool_controller
+                            tool_calls_by_idx[key] = tool_controller
                             tool_calls[call_id] = tool_controller
                         else:
-                            tool_controller = tool_calls_by_idx[idx]
+                            tool_controller = tool_calls_by_idx[key]
 
                         if args:
                             tool_controller.append_args_text(str(args))

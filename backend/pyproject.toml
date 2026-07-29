@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "backend"
-version = "0.1.0"
+version = "1.1.0"
 description = ""
-authors = ["Hoang Le"]
+authors = ["Alexander Muratov", "Hoang Le"]
 readme = "README.md"
 packages = [
     { include = "app" },
@@ -20,6 +20,8 @@ assistant-stream = "^0.0.5"
 langchain-ollama = "0.2.3"
 langgraph-checkpoint-postgres = "2.0.25"
 psycopg = {extras = ["binary", "pool"], version = "^3.3.4"}
+anthropic = "^0.120.0"
+langchain-mcp-adapters = "^0.1"
 
 
 [tool.poetry.group.dev.dependencies]

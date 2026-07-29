@@ -1,0 +1,41 @@
+# Declarative REST tools. Copy to rest_tools.yaml (or point REST_TOOLS_CONFIG
+# at a file) and each entry becomes a tool the agent can call.
+#
+# Interpolation:
+#   {arg_name}   — replaced with the model-supplied argument (declared in args)
+#   ${ENV_VAR}   — replaced with the environment variable at call time; a tool
+#                  referencing an unset env var is automatically disabled.
+#
+# Fields: name, description (required); method (default GET), url (required),
+# query, headers, body, args, prompt_hint (optional).
+
+# Works without any API key — current weather from Open-Meteo.
+- name: get_weather
+  description: Get the current weather for a location given its latitude and longitude.
+  method: GET
+  url: "https://api.open-meteo.com/v1/forecast"
+  query:
+    latitude: "{latitude}"
+    longitude: "{longitude}"
+    current_weather: "true"
+  args:
+    latitude:
+      type: number
+      description: Latitude of the location.
+    longitude:
+      type: number
+      description: Longitude of the location.
+  prompt_hint: For weather questions, call get_weather with the location's coordinates.
+
+# Example of an authenticated API (disabled until WEATHERAPI_KEY is set).
+# - name: get_weather_by_city
+#   description: Get the current weather for a city by name.
+#   method: GET
+#   url: "https://api.weatherapi.com/v1/current.json"
+#   query:
+#     key: "${WEATHERAPI_KEY}"
+#     q: "{city}"
+#   args:
+#     city:
+#       type: string
+#       description: City name, e.g. "Berlin".
