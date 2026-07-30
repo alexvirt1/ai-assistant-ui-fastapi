@@ -23,14 +23,30 @@ const RunningIndicator = ({
   </div>
 );
 
+/**
+ * Mirrors assistant-ui's own streaming indicator — the dot shown before the
+ * first token arrives — so the two are indistinguishable.
+ *
+ * The library draws it as a pseudo-element on the markdown root, via the
+ * tailwind plugin in @assistant-ui/react-markdown:
+ *
+ *   :where(.aui-md-running):empty::after {
+ *     @apply animate-pulse font-sans content-['\25CF'] ltr:ml-1 rtl:mr-1;
+ *   }
+ *
+ * So it is the glyph U+25CF BLACK CIRCLE, pulsing, inheriting the surrounding
+ * text colour and font size. The earlier version here was a fixed 10px
+ * background-filled div in gray-400, which is why it read as a different
+ * indicator: wrong size, wrong colour, and a drawn shape rather than a glyph.
+ * Matching the utilities reproduces it exactly, including the ml-1 offset the
+ * empty-message case also has.
+ */
 const ThinkingDot = () => (
-  <div
-    className="my-1.5 flex w-fit items-center"
-    role="status"
-    aria-label="Waiting for the assistant's response"
-  >
-    <span className="size-2.5 animate-pulse rounded-full bg-gray-400 dark:bg-gray-500" />
-  </div>
+  <p role="status" aria-label="Waiting for the assistant's response">
+    <span className="animate-pulse font-sans ltr:ml-1 rtl:mr-1" aria-hidden>
+      {"●"}
+    </span>
+  </p>
 );
 
 /**

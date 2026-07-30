@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-30
+
+### Added
+
+- **Conversation history trimming** (`backend/app/langgraph/agent.py`):
+  `create_react_agent` now receives a `prompt` callable instead of a string. It
+  prepends the composed system prompt and appends a `trim_messages` window of
+  recent history bounded by `HISTORY_MAX_TOKENS` (default 3000). Previously the
+  full thread was sent on every call; once it outgrew `OLLAMA_NUM_CTX`, Ollama
+  truncated from the front and dropped the system prompt — including the tool
+  guidance — while recent stale answers survived, so the model answered from
+  memory instead of calling `web_search`. The window uses `start_on="human"` so
+  a `ToolMessage` is never sent without its calling `AIMessage`, and falls back
+  to the latest message if one turn exceeds the budget. Trimming affects only
+  what the model sees; the stored transcript is untouched.
+
+### Fixed
+
+- **Post-tool waiting dot did not match the one shown before the first token**
+  (`frontend/components/tools/ToolExecutionIndicators.tsx`): assistant-ui draws
+  its streaming indicator as a pulsing U+25CF glyph that inherits the
+  surrounding text colour and size, via
+  `:where(.aui-md-running):empty::after`. The replacement dot added in 1.1.0
+  was a fixed 10px background-filled `div` in gray-400, so it read as a
+  different element. It now uses the same glyph and utilities.
+
+### Changed
+
+- Version bumped to 1.1.1 (backend `pyproject.toml`, frontend `package.json`).
+
 ## [1.1.0] - 2026-07-28
 
 ### Added

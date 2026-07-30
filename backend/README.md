@@ -50,10 +50,33 @@ Copy `.env.example` to `.env`. The model and server variables:
 | `OLLAMA_MODEL` | Model name (default `qwen3:8b`). |
 | `OLLAMA_BASE_URL` | Ollama endpoint. |
 | `OLLAMA_NUM_CTX` | Context window passed to the model (default `8192`). |
+| `HISTORY_MAX_TOKENS` | Token budget for conversation history sent to the model (default `3000`). |
 | `DATABASE_URL` | When set, enables per-thread conversation persistence. |
 
 Tool-related variables (`ENABLED_TOOLS`, provider API keys, YAML config paths)
 are documented in the [root README](../README.md).
+
+### History trimming
+
+The checkpointer keeps every message in a thread forever, but the context
+window is fixed. Ollama truncates an oversized prompt **from the front**, which
+is where the system prompt lives — so a long thread silently loses its tool
+instructions while stale assistant answers, being recent, survive. The model
+then repeats old answers instead of calling tools.
+
+`agent.py` therefore passes `create_react_agent` a `prompt` **callable** rather
+than a string. On every model call it prepends the composed system prompt and
+appends a `trim_messages` window of recent history bounded by
+`HISTORY_MAX_TOKENS`. The window uses `start_on="human"` so a `ToolMessage` can
+never be sent without the `AIMessage` that called it, and falls back to the most
+recent message if a single turn exceeds the whole budget.
+
+This has to live in the agent, not in `add_langgraph_route`: the route passes
+only the newest human message, and everything before it is loaded from the
+checkpointer inside the graph.
+
+Trimming changes only what the model sees. Nothing is deleted from Postgres, so
+the stored transcript stays complete.
 
 ### Conversation state
 
