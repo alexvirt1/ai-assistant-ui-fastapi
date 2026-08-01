@@ -10,22 +10,46 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.11"
-uvicorn = "^0.23.2"
+uvicorn = "^0.52.0"
+# Imported directly by app/server.py. It used to arrive only via langserve, a
+# transitive of the langchain-cli dev dependency, so a production-only install
+# would not have had it.
+fastapi = "^0.136.3"
 pydantic = "^2.9.2"
-langchain-core = "^0.3.17"
-langchain-openai = "^0.2.8"
-langgraph = "^0.2.46"
+langchain-core = "^1.4.7"
+langchain-openai = "^1.4.1"
+langgraph = "^1.2.10"
 python-dotenv = "^1.0.1"
-assistant-stream = "^0.0.5"
-langchain-ollama = "0.2.3"
-langgraph-checkpoint-postgres = "2.0.25"
+assistant-stream = "^0.0.34"
+langchain-ollama = "1.1.0"
+langgraph-checkpoint-postgres = "3.1.1"
 psycopg = {extras = ["binary", "pool"], version = "^3.3.4"}
 anthropic = "^0.120.0"
-langchain-mcp-adapters = "^0.1"
+langchain-mcp-adapters = "^0.3.1"
+# Held on mcp 1.x, and declared explicitly to enforce that.
+#
+# langchain-mcp-adapters 0.3.1 requires mcp>=1.24.0 with NO upper bound, so a
+# resolver will happily pair it with mcp 2.x - but the two do not work
+# together: the adapter imports RequestContext from mcp.shared.context, which
+# mcp 2.0 removed. That surfaces as an ImportError the moment an MCP server is
+# configured. Revisit when langchain-mcp-adapters declares mcp 2.x support.
+mcp = "^1.29.0"
 
 
 [tool.poetry.group.dev.dependencies]
-langchain-cli = ">=0.0.15"
+# langchain-cli removed: it was the scaffolding tool that generated this
+# project and nothing imports it or langserve. It pulled langserve[all], which
+# pins uvicorn <0.24 and so blocked the uvicorn and mcp upgrades. It was also
+# the only thing supplying fastapi, which is now declared explicitly.
+pytest = "^9.1.1"
+pytest-asyncio = "^1.4.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests are offline by design: no Ollama VM, no Postgres, no network. Anything
+# needing those belongs in the manual probes, not here.
+addopts = "-q"
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["poetry-core"]

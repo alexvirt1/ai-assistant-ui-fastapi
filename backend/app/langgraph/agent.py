@@ -1,28 +1,30 @@
 import os
 
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage, trim_messages
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    trim_messages,
+)
 from langchain_core.messages.utils import count_tokens_approximately
-from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
+from ..models import DEFAULT_ROLE, make_chat_model
 from ..tools import compose_prompt, get_enabled_specs
 
 load_dotenv()
 
-configured_model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
-ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://192.168.87.160:11434")
 
+def make_model(role: str = DEFAULT_ROLE):
+    """The chat model for a role.
 
-def make_model():
-    return ChatOllama(
-        model=os.getenv("OLLAMA_MODEL", configured_model),
-        base_url=os.getenv("OLLAMA_BASE_URL", ollama_base_url),
-        temperature=0,
-        num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
-        disable_streaming="tool_calling",
-        model_kwargs={"think": False},
-    )
+    Construction moved to app/models/factory.py so planner and executor nodes
+    can request other roles later. Behaviour for the default role is unchanged
+    apart from an explicit keep_alive; OLLAMA_MODEL still overrides it.
+    """
+    return make_chat_model(role)
 
 
 BASE_PROMPT = (
@@ -38,6 +40,33 @@ BASE_PROMPT = (
 # system prompt and the tool schemas. Keep it well under OLLAMA_NUM_CTX so
 # there is room for both of those plus the response.
 HISTORY_MAX_TOKENS = int(os.getenv("HISTORY_MAX_TOKENS", "3000"))
+
+
+def _minimal_tail(messages: list) -> list:
+    """Smallest suffix still valid to send when the budget trims to nothing.
+
+    Taking just the final message is not safe: mid-ReAct-loop that message is
+    often a ToolMessage, and a tool result whose calling AIMessage is absent is
+    rejected by the provider. A tool returning a payload larger than the whole
+    budget is enough to reach this.
+
+    Prefers the last human turn onward. Exceeding the budget here is deliberate
+    — an over-long prompt gets truncated by the provider, an invalid one errors.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            return messages[i:]
+
+    # No human turn in range: keep a trailing tool result with its call.
+    last = messages[-1] if messages else None
+    if isinstance(last, ToolMessage):
+        for i in range(len(messages) - 2, -1, -1):
+            message = messages[i]
+            if isinstance(message, AIMessage) and any(
+                call["id"] == last.tool_call_id for call in message.tool_calls or []
+            ):
+                return messages[i:]
+    return messages[-1:]
 
 
 def make_prompt(system_prompt: str):
@@ -78,7 +107,7 @@ def make_prompt(system_prompt: str):
         # A single turn larger than the budget can trim to nothing; sending
         # only a system prompt would lose the user's question entirely.
         if not trimmed:
-            trimmed = messages[-1:]
+            trimmed = _minimal_tail(messages)
         return [system] + list(trimmed)
 
     return prompt

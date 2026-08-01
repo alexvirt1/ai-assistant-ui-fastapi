@@ -76,7 +76,22 @@ async def connect_mcp_servers() -> None:
     if not servers:
         return
 
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    # Imported here, and defensively: langchain-mcp-adapters pins mcp with no
+    # upper bound, so an incompatible pair resolves cleanly and only fails on
+    # import (mcp 2.x moved RequestContext, which adapters 0.3.x imports).
+    # Left unguarded this raises inside the FastAPI lifespan and the whole
+    # backend fails to start, which contradicts the promise above - a
+    # misconfigured MCP setup should cost you MCP, not the app.
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+    except Exception as exc:
+        logger.error(
+            "MCP support unavailable (%s: %s); %d configured server(s) skipped",
+            type(exc).__name__,
+            exc,
+            len(servers),
+        )
+        return
 
     for server in servers:
         name = server["name"]
