@@ -41,6 +41,29 @@ present in the real environment wins over the same key in `.env`. That matters
 when the app runs under systemd with an `Environment=` or override file — the
 unit's value takes precedence, and a manual shell run falls through to `.env`.
 
+## Tests
+
+```bash
+poetry run pytest
+```
+
+The suite is **offline by design** — no Ollama VM, no Postgres, no outbound
+HTTP — so it runs in about a second and needs nothing configured. It covers the
+pure logic where the subtle bugs have actually been: model role resolution and
+fallback, the history-trimming window, tool registration and self-disabling, and
+REST tool construction with `{arg}` / `${ENV_VAR}` interpolation.
+
+Anything needing a live model, the VM, or a real HTTP endpoint stays a manual
+check (`python -m app.models`, or a second backend on port 8001) rather than
+being mocked into the suite.
+
+Two conventions worth keeping. `conftest.py` clears `OLLAMA_MODEL`,
+`ENABLED_TOOLS`, `MODELS_CONFIG` and `REST_TOOLS_CONFIG` for every test, so a
+developer's `.env` cannot change the result. And the trimming tests sweep a
+range of token budgets rather than asserting at one: a single budget can land on
+a safe boundary by luck and pass even when the guard being tested is gone —
+which is exactly what happened while writing them.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. The model and server variables:
@@ -51,10 +74,39 @@ Copy `.env.example` to `.env`. The model and server variables:
 | `OLLAMA_BASE_URL` | Ollama endpoint. |
 | `OLLAMA_NUM_CTX` | Context window passed to the model (default `8192`). |
 | `HISTORY_MAX_TOKENS` | Token budget for conversation history sent to the model (default `3000`). |
+| `OLLAMA_KEEP_ALIVE` | How long the VM holds a model in memory (default `30m`). |
+| `MODELS_CONFIG` | Path to the model-roles YAML (default `backend/models.yaml`). |
 | `DATABASE_URL` | When set, enables per-thread conversation persistence. |
 
 Tool-related variables (`ENABLED_TOOLS`, provider API keys, YAML config paths)
 are documented in the [root README](../README.md).
+
+### Model roles
+
+Code asks for a *role* rather than an Ollama tag, so which model runs a given
+piece of work is deployment configuration. Roles are declared in `models.yaml`
+(copy `models.example.yaml`) and resolved by `app/models/`:
+
+```python
+from ..models import make_chat_model
+model = make_chat_model("deep")     # planning / synthesis
+```
+
+`OLLAMA_MODEL` still wins for the default `fast` role, so existing `.env` files
+behave exactly as before. A role whose tag the VM does not serve falls back to
+`fast` rather than failing — the same degradation the tool registry uses for a
+missing API key.
+
+Inspect roles, VM inventory and what is currently loaded:
+
+```bash
+poetry run python -m app.models
+```
+
+**The VM serves one model at a time.** Loading a second evicts the first, and a
+cold load costs roughly 6s for an 8B and 19s for a 14B against 0.3s once warm.
+Group work by model rather than alternating; `OLLAMA_KEEP_ALIVE` (default `30m`,
+against Ollama's own 5m) stops an idle conversation re-paying that load.
 
 ### History trimming
 

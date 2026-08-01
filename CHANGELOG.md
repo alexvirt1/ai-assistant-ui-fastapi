@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated to langgraph 1.x** — langgraph 0.2.76 → 1.2.10, langgraph-checkpoint
+  2.1.2 → 4.1.1, langgraph-checkpoint-postgres 2.0.25 → 3.1.1, langchain-core
+  0.3.86 → 1.5.3, langchain-ollama 0.2.3 → 1.1.0, langchain-openai 0.2.14 →
+  1.4.1. This removes the `allowed_objects` pending-deprecation warning at its
+  source: checkpoint 4.1.1 constructs `Reviver(allowed_objects="core")`, which
+  no version reachable from langgraph 0.2.x did. The Postgres checkpoint schema
+  is unchanged — the migration lists are identical and the database was already
+  at v9 — so rollback is a lockfile revert with no database action.
+- `fastapi` is now a declared dependency. `app/server.py` imports it directly
+  but it arrived only via `langserve`, a transitive of the `langchain-cli` dev
+  dependency, so a production-only install would not have had it.
+- `assistant-stream` 0.0.5 → 0.0.34. Verified wire-compatible with the frontend
+  before upgrading: the data-stream encoder emits the same `0:` / `b:` / `c:` /
+  `a:` prefixes with identical JSON keys, confirmed by diffing raw responses
+  from both versions.
+- `uvicorn` 0.23.2 → 0.52.0, `mcp` 1.12.4 → 1.29.0, `langchain-mcp-adapters`
+  0.1.14 → 0.3.1, `sse-starlette` 1.8.2 → 3.4.6.
+- **`langchain-cli` removed from dev dependencies.** Nothing imports it or
+  `langserve`; it was the scaffolding tool that generated the project, and its
+  `langserve[all]` dependency pinned `uvicorn <0.24`, blocking the upgrade. It
+  was also the only source of `fastapi`, now declared explicitly.
+- **`mcp` held at 1.x, declared explicitly to enforce it.** `langchain-mcp-adapters`
+  0.3.1 requires `mcp>=1.24.0` with no upper bound, so resolvers pair it with
+  mcp 2.x — but they are incompatible: the adapter imports `RequestContext`
+  from `mcp.shared.context`, which mcp 2.0 removed. Without the explicit pin a
+  future relock could silently produce that combination.
+
+### Fixed
+
+- **A failed MCP import could take down the whole backend**
+  (`backend/app/tools/mcp/loader.py`): `connect_mcp_servers()` imported
+  `MultiServerMCPClient` outside its `try`, so an incompatible
+  langchain-mcp-adapters/mcp pair raised inside the FastAPI lifespan and the
+  app failed to start — contradicting the function's own promise that a broken
+  server is skipped rather than blocking startup. Only reachable with an
+  `mcp_servers.yaml` present. The import is now guarded: MCP is logged as
+  unavailable and its servers skipped.
+- `model_kwargs={"think": False}` replaced with `reasoning=False` in
+  `backend/app/models/factory.py`. langchain-ollama 1.x dropped `model_kwargs`,
+  and because the model config is `extra="ignore"` the old spelling is silently
+  discarded rather than raising — which would have let qwen3's reasoning
+  preamble back into the chat window undetected.
+
+### Added
+
+- `backend/tests/test_model_factory.py`: constructs the model and asserts on the
+  resulting fields. The migration exposed that nothing exercised
+  `make_chat_model`, so a setting that silently stopped applying failed no test.
+
+- **Model registry and Ollama VM management** (`backend/app/models/`) — phase 0
+  of the multi-step planner architecture. Code asks for a *role* (`fast`,
+  `deep`, `code`, `vision`, `embed`) instead of an Ollama tag; roles are
+  declared in `models.yaml` (see `models.example.yaml`) and resolved by
+  `make_chat_model(role)`. A role whose tag the VM does not serve falls back to
+  `fast`, mirroring how a tool with a missing API key self-disables, and
+  `OLLAMA_MODEL` still wins for the default role so existing `.env` files are
+  unaffected. `app/models/ollama.py` wraps the VM endpoints —
+  `list_available()`, `resident()`, `ensure()` (pull), `warm()` (preload),
+  `validate()` — and `python -m app.models` prints roles, inventory and what is
+  currently loaded.
+- **Test suite** (`backend/tests/`, pytest + pytest-asyncio, configured in
+  `pyproject.toml`): 76 offline tests covering model role resolution and
+  fallback, the history-trimming window, tool registration and self-disabling,
+  and REST tool construction with `{arg}` / `${ENV_VAR}` interpolation. No VM,
+  database or network required; runs in ~1s. Live-infrastructure checks stay
+  manual rather than being mocked.
+
+### Fixed
+
+- **Orphaned tool result when a single turn exceeded the history budget**
+  (`backend/app/langgraph/agent.py`): the budget-exhausted fallback returned
+  just the final message, which mid-ReAct-loop is a `ToolMessage` — sending a
+  tool result with no matching `AIMessage`, which providers reject. Reachable
+  whenever a tool returns more than the whole budget (the Yahoo Finance history
+  endpoint returns ~186 KB). The fallback now falls back to the last human turn
+  onward, keeping any tool exchange intact. Found by the new tests: sweeping
+  budgets rather than asserting at a single one exposed it.
+
+- `OLLAMA_KEEP_ALIVE` (default `30m`) is now passed explicitly to `ChatOllama`.
+  Ollama's own default is 5 minutes, so an idle conversation re-paid the cold
+  model load — measured at ~6s for an 8B and ~19s for a 14B, against 0.3s warm.
+
+  Measured while building this: the VM holds **one model at a time**; loading a
+  second evicts the first. Step-level model routing would therefore be dominated
+  by load time, so the planned executor groups steps by model rather than
+  alternating.
+
 ## [1.1.2] - 2026-07-31
 
 ### Added

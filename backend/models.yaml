@@ -1,0 +1,32 @@
+# Model roles. Copy to models.yaml (or point MODELS_CONFIG at a file).
+#
+# Callers ask for a role, not a tag, so which model runs a given piece of work
+# is deployment configuration rather than something baked into agent code.
+#
+# A role whose tag the VM does not serve falls back to the "fast" role, so a
+# missing model degrades instead of breaking startup. Inspect the current state
+# with:  python -m app.models
+#
+# Sizing note: the VM serves one model at a time - loading a second evicts the
+# first. A cold load costs roughly 6s for an 8B and 19s for a 14B, against 0.3s
+# once warm. Group work by model rather than alternating between them.
+
+- role: fast
+  tag: qwen3:8b
+  description: Tool calls and short reasoning. The default and the fallback.
+
+- role: deep
+  tag: qwen2.5:14b-instruct-q4_K_M
+  description: Planning and final synthesis, where quality decides the outcome.
+
+- role: code
+  tag: qwen2.5-coder:7b
+  description: Code generation and review.
+
+- role: vision
+  tag: qwen2.5vl:7b
+  description: Image understanding.
+
+- role: embed
+  tag: nomic-embed-text:latest
+  description: Embeddings, for retrieval work later.
