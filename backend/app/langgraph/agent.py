@@ -25,7 +25,14 @@ def make_model():
     )
 
 
-BASE_PROMPT = "You are a private local assistant."
+BASE_PROMPT = (
+    "You are a private local assistant. "
+    # The frontend renders math with remark-math, which recognises $...$ and
+    # $$...$$ only. Left to itself the model often emits \\(...\\) or \\[...\\],
+    # which would show up as literal backslashes.
+    "Write any mathematics as LaTeX: $...$ for inline math and $$...$$ on its "
+    "own lines for displayed equations. Do not use \\( \\) or \\[ \\]."
+)
 
 # Token budget for conversation history handed to the model, excluding the
 # system prompt and the tool schemas. Keep it well under OLLAMA_NUM_CTX so

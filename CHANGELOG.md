@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Light/dark theme with a toggle button**: `next-themes` mounted in
+  `frontend/app/layout.tsx` via `frontend/components/ThemeProvider.tsx`
+  (`attribute="class"`, `defaultTheme="system"`), and a
+  `frontend/components/ThemeToggle.tsx` button in the chat header beside "New
+  chat". No new palette was needed — assistant-ui's tailwind plugin already
+  defines both a `:root` and a `.dark` set of `--aui-*` variables, and
+  `tailwind.config.ts` was already `darkMode: ["class"]`, so the whole chat
+  surface follows the class on `<html>`. `<body>` now carries
+  `bg-aui-background text-aui-foreground` so the page around the thread matches,
+  and `<html>` has `suppressHydrationWarning` because next-themes sets the class
+  before React hydrates. The choice persists in localStorage and defaults to the
+  OS preference; an inlined script applies it before first paint, so there is no
+  flash of the wrong theme.
+
+- **LaTeX math rendering in the chat UI**: `makeMarkdownText` in
+  `frontend/components/MyAssistant.tsx` now runs `remark-math` (parses `$...$`
+  and `$$...$$`) and `rehype-katex` (renders it), with `katex/dist/katex.min.css`
+  imported once in `frontend/app/layout.tsx` — KaTeX emits markup only, so
+  without the stylesheet math renders unstyled. `BASE_PROMPT` in
+  `backend/app/langgraph/agent.py` now instructs the model to use `$...$` and
+  `$$...$$` rather than `\(...\)` or `\[...\]`, which `remark-math` does not
+  recognise; the `preprocess` prop that would normalise those client-side does
+  not exist in the installed `@assistant-ui/react-markdown` 0.7.5. Adds
+  `remark-math`, `rehype-katex` and `katex` as frontend dependencies (~88 kB to
+  the route's First Load JS, plus a separate 27 kB stylesheet and KaTeX fonts).
+
 - `RAPIDAPI_KEY` documented in `backend/.env.example`, for the Yahoo Finance
   REST tool entries (`get_stock_quote`, and a commented `get_stock_history`)
   configured in `backend/rest_tools.yaml`. Both self-disable while the key is
