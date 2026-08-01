@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-31
+
 ### Added
 
 - **Light/dark theme with a toggle button**: `next-themes` mounted in
@@ -39,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   REST tool entries (`get_stock_quote`, and a commented `get_stock_history`)
   configured in `backend/rest_tools.yaml`. Both self-disable while the key is
   unset, so no restart-time failure if it is absent.
+
+### Changed
+
+- Version bumped to 1.1.2 (backend `pyproject.toml`, frontend `package.json`).
 
 ## [1.1.1] - 2026-07-30
 
