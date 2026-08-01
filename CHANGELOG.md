@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `RAPIDAPI_KEY` documented in `backend/.env.example`, for the Yahoo Finance
+  REST tool entries (`get_stock_quote`, and a commented `get_stock_history`)
+  configured in `backend/rest_tools.yaml`. Both self-disable while the key is
+  unset, so no restart-time failure if it is absent.
+
 ## [1.1.1] - 2026-07-30
 
 ### Added

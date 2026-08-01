@@ -39,3 +39,50 @@
 #     city:
 #       type: string
 #       description: City name, e.g. "Berlin".
+
+# --- Yahoo Finance via RapidAPI -------------------------------------------
+# Disabled until RAPIDAPI_KEY is set in .env.
+#
+# Uses the "Yahoo Finance15" listing (steadyapi). The host appears twice — in
+# the URL and in the X-RapidAPI-Host header — and the two must match. RapidAPI
+# hosts several competing Yahoo Finance products with different paths and
+# response shapes; a valid key still returns 403 "not subscribed" unless the
+# account is subscribed to this specific listing.
+#
+# The `type` parameter is fixed rather than declared as an arg: every entry in
+# `args` is required, and each extra required argument is one more thing a
+# small local model can get wrong.
+- name: get_stock_quote
+  description: >-
+    Get the current Yahoo Finance quote for a stock ticker symbol: latest
+    price, net change, percentage change, bid/ask, 52-week range and whether
+    the market is open, pre-market or closed.
+  method: GET
+  url: "https://yahoo-finance15.p.rapidapi.com/api/v1/markets/quote"
+  query:
+    ticker: "{ticker}"
+    type: "STOCKS"
+  headers:
+    X-RapidAPI-Key: "${RAPIDAPI_KEY}"
+    X-RapidAPI-Host: "yahoo-finance15.p.rapidapi.com"
+  args:
+    ticker:
+      type: string
+      description: >-
+        A single stock ticker symbol, e.g. "AAPL", "MSFT" or "TSLA". One symbol
+        per call - this endpoint does not accept a list.
+  prompt_hint: >-
+    For share prices or stock quotes, call get_stock_quote with one ticker
+    symbol. In the result, primaryData is the current or pre-market quote and
+    secondaryData is the previous session's close; marketStatus says which
+    applies.
+
+# Historical prices. NOT enabled, and not merely a matter of uncommenting:
+# /api/v1/markets/stock/history returns ~186 KB for a single symbol, which
+# REST_TOOL_MAX_CHARS (default 6000) truncates mid-JSON into something the
+# model cannot parse. It would need server-side reduction — a Python tool under
+# app/tools/ that requests it and returns only the closing prices — rather than
+# a declarative pass-through entry.
+#
+# Note also that the BASIC plan enforces a per-second rate limit: two calls in
+# quick succession return HTTP 429.

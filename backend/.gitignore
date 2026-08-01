@@ -129,6 +129,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+rest_tools.yaml
+mcp_servers.yaml
 
 # Spyder project settings
 .spyderproject
