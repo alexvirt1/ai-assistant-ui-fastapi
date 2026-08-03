@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Frontend upgraded to Next 16 and React 19.** `next` 15.0.3 → 16.2.12,
+  `react`/`react-dom` 18.3.1 → 19.2.8, types to match, `@types/node` → 26.1.2,
+  `postcss` → 8.5.25. Next 15.0.3 accepted only React 18 or a specific 19
+  release candidate, so Next had to move first; Next 16 accepts React 18, which
+  made it a valid intermediate step. `tsconfig.json` now sets
+  `"jsx": "react-jsx"`, which Next 16 requires.
+- **ESLint 8 → 9 with flat config.** Next 16 removed the `next lint` command,
+  which silently broke the `lint` script, and `eslint-config-next` 16 requires
+  ESLint ≥ 9. `.eslintrc.json` is replaced by `eslint.config.mjs` and the script
+  is now `eslint .`. Fixing the resulting errors converted three `require()`
+  calls in `tailwind.config.ts` to ESM imports.
+- Removed `zod` and `@ai-sdk/openai` — neither was imported anywhere. Dropping
+  the latter also removed the AI SDK v6 migration from scope.
+
+### Notes
+
+- **Staying on `@assistant-ui/react` 0.7.17** rather than upgrading to 0.15.1.
+  0.15 removes everything this project's integration is built on —
+  `useEdgeRuntime`, the styled `Thread`, `makeMarkdownText`, `useMessage`,
+  `useThread`, `useAssistantRuntime` — and drops the `/tailwindcss` plugin
+  entrypoints that supply the `--aui-*` light/dark palette. The replacement
+  runtime, `useAssistantTransportRuntime`, is marked `@alpha`. The upgrade would
+  therefore be a rewrite of the presentation layer (runtime, chat UI, theming)
+  with no test coverage to catch regressions, for no feature this project needs.
+  0.7.17 declares `react: ^18 || ^19` and runs unchanged on React 19 / Next 16.
+- Consequence: 0.7.17 declares `tailwindcss: ^3.4.4` as a peer dependency, so
+  **Tailwind is pinned to 3.x** for as long as assistant-ui stays on 0.7.17.
+
 - **Migrated to langgraph 1.x** — langgraph 0.2.76 → 1.2.10, langgraph-checkpoint
   2.1.2 → 4.1.1, langgraph-checkpoint-postgres 2.0.25 → 3.1.1, langchain-core
   0.3.86 → 1.5.3, langchain-ollama 0.2.3 → 1.1.0, langchain-openai 0.2.14 →
