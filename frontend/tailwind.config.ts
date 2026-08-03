@@ -1,4 +1,7 @@
 import type { Config } from "tailwindcss";
+import assistantUi from "@assistant-ui/react/tailwindcss";
+import assistantUiMarkdown from "@assistant-ui/react-markdown/tailwindcss";
+import animate from "tailwindcss-animate";
 
 const config = {
   darkMode: ["class"],
@@ -7,11 +10,7 @@ const config = {
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
-  plugins: [
-    require("tailwindcss-animate"),
-    require("@assistant-ui/react/tailwindcss"),
-    require("@assistant-ui/react-markdown/tailwindcss"),
-  ],
+  plugins: [animate, assistantUi, assistantUiMarkdown],
 } satisfies Config;
 
 export default config;

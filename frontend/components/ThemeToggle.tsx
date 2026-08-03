@@ -19,6 +19,10 @@ export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
+  // Intentional: this is the documented next-themes mount guard. The theme is
+  // only knowable in the browser, so the first client render must match the
+  // server's (icon-less) output and the icon appears on the commit after mount.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   const isDark = resolvedTheme === "dark";
