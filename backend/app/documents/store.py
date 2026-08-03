@@ -17,8 +17,10 @@ from dataclasses import dataclass
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from .chunker import chunk_text, estimate_tokens
+from .summaries import ChunkSummary
 
 # Kept in one place so the schema is greppable; created idempotently at startup.
 SCHEMA = """
@@ -39,6 +41,22 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     text            TEXT    NOT NULL,
     token_estimate  INTEGER NOT NULL,
     PRIMARY KEY (document_id, idx)
+);
+
+-- Keyed by model and prompt_version as well as position: changing either must
+-- invalidate rather than silently serve summaries produced by the old wording.
+CREATE TABLE IF NOT EXISTS chunk_summaries (
+    document_id     UUID    NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    idx             INTEGER NOT NULL,
+    model_name      TEXT    NOT NULL,
+    prompt_version  TEXT    NOT NULL,
+    topic           TEXT    NOT NULL,
+    findings        TEXT    NOT NULL,
+    entities        JSONB   NOT NULL DEFAULT '[]',
+    uncertain       TEXT    NOT NULL DEFAULT '',
+    degraded        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (document_id, idx, model_name, prompt_version)
 );
 """
 
@@ -150,6 +168,82 @@ async def get_document(document_id: uuid.UUID) -> StoredDocument | None:
             )
         ).fetchone()
     return StoredDocument(reused=False, **row) if row else None
+
+
+async def get_chunks(document_id: uuid.UUID) -> list[str]:
+    """Every chunk's text, in order - the map step's input."""
+    url = database_url()
+    if not url:
+        return []
+    async with await AsyncConnection.connect(url) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT text FROM document_chunks WHERE document_id = %s ORDER BY idx",
+                (document_id,),
+            )
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+async def load_cached_summary(
+    document_id: str, idx: int, model_name: str, prompt_version: str
+) -> ChunkSummary | None:
+    """A previously computed summary, if one exists for this exact key."""
+    url = database_url()
+    if not url:
+        return None
+    async with await AsyncConnection.connect(url) as conn:
+        conn.row_factory = dict_row
+        row = await (
+            await conn.execute(
+                "SELECT topic, findings, entities, uncertain FROM chunk_summaries"
+                " WHERE document_id = %s AND idx = %s AND model_name = %s"
+                " AND prompt_version = %s",
+                (document_id, idx, model_name, prompt_version),
+            )
+        ).fetchone()
+    return ChunkSummary(**row) if row else None
+
+
+async def save_summary(
+    *,
+    document_id: str,
+    index: int,
+    model_name: str,
+    prompt_version: str,
+    summary: ChunkSummary,
+    degraded: bool,
+) -> None:
+    """Persist one summary immediately.
+
+    Written per chunk rather than batched at the end so a job killed at chunk 60
+    keeps the first 59 - the whole point of the cache.
+    """
+    url = database_url()
+    if not url:
+        return
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.execute(
+            "INSERT INTO chunk_summaries (document_id, idx, model_name,"
+            " prompt_version, topic, findings, entities, uncertain, degraded)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (document_id, idx, model_name, prompt_version)"
+            " DO UPDATE SET topic = EXCLUDED.topic, findings = EXCLUDED.findings,"
+            " entities = EXCLUDED.entities, uncertain = EXCLUDED.uncertain,"
+            " degraded = EXCLUDED.degraded",
+            (
+                document_id,
+                index,
+                model_name,
+                prompt_version,
+                summary.topic,
+                summary.findings,
+                Jsonb(summary.entities),
+                summary.uncertain,
+                degraded,
+            ),
+        )
+        await conn.commit()
 
 
 async def get_chunk(document_id: uuid.UUID, idx: int) -> str | None:

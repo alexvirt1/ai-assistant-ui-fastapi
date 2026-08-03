@@ -149,6 +149,55 @@ reference.
 Requires `DATABASE_URL`; without it the tables are not created and uploads
 return 503, matching how conversation persistence already degrades.
 
+**The map step** (`mapper.py`) summarises chunks one at a time into a structured
+record — `topic`, `findings`, `entities`, `uncertain` — because merging 87
+freeform paragraphs produces mush while merging 87 aligned records produces a
+document map.
+
+- **Sequential by design.** Independent chunks look like an obvious parallel
+  fan-out, but the VM serves one model on one GPU, so concurrent calls would
+  queue at Ollama for no gain while complicating progress and cancellation.
+- **Three attempts, decreasing strictness**: structured, structured with an
+  explicit JSON reminder, then unvalidated prose flagged `degraded`. Over 87
+  chunks a small model will fail a schema occasionally, and the job must not die
+  on chunk 61.
+- **Cached per chunk**, keyed by `(document_id, idx, model, prompt_version)` and
+  written as each chunk completes. Measured: a re-run is **106x faster** and
+  entirely cache-served, and bumping `PROMPT_VERSION` invalidates cleanly rather
+  than serving summaries produced by older wording.
+- **Model access is injected**, so validation, repair, degradation, caching and
+  cancellation are all tested without a VM. `callers.py` holds the only code
+  that talks to Ollama, using the `fast` role so a whole job stays on one model
+  and pays no swap cost.
+
+The per-chunk instruction spells out each field explicitly rather than relying
+on the schema's descriptions. Tested against qwen3:8b, descriptions alone
+returned an empty `entities` list for text naming five people and companies, and
+a `topic` that echoed the document title instead of the section's own subject.
+
+**The reduce step** (`reducer.py`, `reduce.py`) combines chunk summaries into a
+`DocumentSummary` — `overview`, `key_findings`, `outline`, `entities`, `gaps`.
+
+The design decision worth knowing: **the model is asked to do as little as
+possible**. Entities, the outline and the gap report are merged
+deterministically in code; the model writes only the prose that needs judgement.
+Asked to merge 87 entity lists a model silently drops some, and under
+hierarchical reduce that loss compounds at every level. Computed in code, a name
+appearing once in chunk 3 reaches the final summary however many levels it
+passes through — a property the tests assert directly.
+
+Reduce runs on the `deep` role (qwen2.5:14b), worth one model swap for the
+output a person actually reads, and recurses only when summaries overflow one
+window — 87 chunks at ~300 tokens fit a single pass, so the recursion exists for
+documents several times larger.
+
+Two failure modes are handled explicitly. A malformed reduce response stitches
+the inputs together rather than discarding an hour of map work. And the reduce
+prompt insists that every number, threshold and identifier be carried through:
+without that instruction, qwen2.5:14b dropped a calibration constant that the
+map step had correctly captured, producing a shorter, better-reading summary
+that had lost the single most important value in the document.
+
 ### History trimming
 
 The checkpointer keeps every message in a thread forever, but the context

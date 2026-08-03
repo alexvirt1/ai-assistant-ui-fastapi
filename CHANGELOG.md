@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Large-document pipeline, phase 3 — the reduce step**
+  (`backend/app/documents/reducer.py`, `reduce.py`): combines chunk summaries
+  into a `DocumentSummary` of `overview`, `key_findings`, `outline`, `entities`
+  and `gaps`.
+  - **Entities, outline and gaps are merged deterministically in code**, not by
+    the model, which only writes the two prose fields. Asked to merge 87 entity
+    lists a model silently drops some, and hierarchical reduce compounds that
+    loss at every level; computed in code, a name appearing once in chunk 3
+    reaches the final summary regardless of depth. A test asserts this, and
+    mutation-testing confirms it fails if the merge is moved off the originals.
+  - **Hierarchical when needed**: 87 chunk summaries fit a single reduce pass,
+    so the recursion exists for documents several times larger. Batching packs
+    summaries under a token budget and never drops one, even if a single summary
+    exceeds the budget alone.
+  - Runs on the `deep` role (qwen2.5:14b) — one model swap, worth it for the
+    output a person reads. A malformed response stitches the inputs rather than
+    discarding the entire map phase.
+  - **Numeric preservation fixed by testing**: on a live 4-chunk run the map
+    correctly captured a calibration constant of `8.472` and the reduce dropped
+    it, producing a shorter, better-reading summary that had lost the document's
+    most important value. Making the prompt insist that every number, threshold
+    and identifier be carried through restored it and lengthened the output from
+    711 to 1204 characters.
+  - 27 new tests (153 backend total) covering entity merging, outline
+    collapsing, gap collection, batching, hierarchical recursion, and stitching
+    on failure.
+
+- **Large-document pipeline, phase 2 — the map step**
+  (`backend/app/documents/mapper.py`, `summaries.py`, `callers.py`): one
+  structured-prose summary per chunk — `topic`, `findings`, `entities`,
+  `uncertain` — with caching that makes a long job resumable.
+  - **Three attempts of decreasing strictness**: structured output, structured
+    with an explicit JSON reminder, then unvalidated prose flagged `degraded`.
+    Over 87 chunks a small model will fail a schema occasionally; an 80-minute
+    job must not die on chunk 61. `asyncio.CancelledError` is re-raised rather
+    than mistaken for a schema failure and retried.
+  - **Cached in `chunk_summaries`**, keyed by
+    `(document_id, idx, model_name, prompt_version)` and written as each chunk
+    completes rather than batched, so a job killed at chunk 60 keeps the first
+    59. Measured against Postgres: a re-run was **106x faster** and fully
+    cache-served, and bumping `PROMPT_VERSION` correctly missed the cache
+    instead of serving summaries produced by older wording.
+  - **Sequential, not fanned out.** The VM serves one model on one GPU, so
+    parallel calls would queue at Ollama for no gain while making progress
+    reporting and cancellation harder.
+  - **Model access is injected**, so validation, repair, degradation, caching,
+    progress and cancellation are all covered by 12 offline tests (126 backend
+    total). `callers.py` is the only module that talks to Ollama.
+  - The per-chunk prompt spells out each field explicitly. Relying on the
+    schema's field descriptions alone, qwen3:8b returned an **empty `entities`
+    list** for text naming five people and companies, and a `topic` echoing the
+    document title; with explicit instructions it extracted all five names and
+    section-specific topics.
+
 - **Large-document pipeline, phase 1** (`backend/app/documents/`): upload,
   storage, token-aware chunking, and a pre-flight scope check — all with **no
   model calls**, so a 5 MB file is sized in milliseconds instead of silently
