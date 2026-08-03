@@ -28,6 +28,10 @@ REDUCE_PROMPT_VERSION = "1"
 # crowding it out.
 MAX_ENTITIES = 120
 
+# Facts are the payload a reader most often wants back, so this is generous;
+# 87 chunks yielding a handful each still fits comfortably.
+MAX_KEY_FACTS = 400
+
 
 class ReduceOutput(BaseModel):
     """What the model is asked for - deliberately only the prose."""
@@ -54,6 +58,7 @@ class DocumentSummary:
     key_findings: str
     outline: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
+    key_facts: list[str] = field(default_factory=list)
     gaps: str = ""
     sections: int = 0
     degraded_sections: int = 0
@@ -85,6 +90,35 @@ def merge_entities(summaries: list[ChunkSummary], limit: int = MAX_ENTITIES) -> 
 
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], spellings[kv[0]].casefold()))
     return [spellings[key] for key, _ in ranked[:limit]]
+
+
+def merge_key_facts(summaries: list[ChunkSummary], limit: int = MAX_KEY_FACTS) -> list[str]:
+    """Every extracted fact, in document order, deduplicated.
+
+    Order is preserved rather than ranked by frequency: facts are positional
+    (chapter 3's threshold is not chapter 40's), and a reader following the
+    document benefits from them appearing as they do in the text.
+
+    This exists because summarising loses them. In an 87-chunk run, three of
+    four planted facts vanished during the map step - each chunk compresses
+    ~130:1, and one sentence in 64 KB does not survive that. Extracted into a
+    list and merged here, a fact stated once reaches the final summary.
+    """
+    seen: set[str] = set()
+    facts: list[str] = []
+
+    for summary in summaries:
+        for raw in summary.key_facts:
+            fact = _normalise(raw)
+            if not fact:
+                continue
+            key = fact.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            facts.append(fact)
+
+    return facts[:limit]
 
 
 def build_outline(summaries: list[ChunkSummary]) -> list[str]:
@@ -147,6 +181,8 @@ def batch_summaries(
 def render_summary(summary: ChunkSummary) -> str:
     """One chunk summary as the reduce prompt sees it."""
     parts = [f"Topic: {summary.topic}", f"Findings: {summary.findings}"]
+    if summary.key_facts:
+        parts.append("Facts: " + "; ".join(summary.key_facts))
     if summary.entities:
         parts.append("Names: " + ", ".join(summary.entities))
     return "\n".join(parts)
@@ -192,5 +228,6 @@ def as_chunk_summary(result: ReduceOutput, merged: list[ChunkSummary]) -> ChunkS
         topic=result.overview[:200],
         findings=result.key_findings,
         entities=merge_entities(merged),
+        key_facts=merge_key_facts(merged),
         uncertain=collect_gaps(merged),
     )

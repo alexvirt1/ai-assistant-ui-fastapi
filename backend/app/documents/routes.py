@@ -9,8 +9,13 @@ import os
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from pydantic import BaseModel
 
 from .callers import make_callers, make_reduce_caller
+from .embeddings import embed_chunks, embed_query, make_embedder, split_for_retrieval
+from .retrieval import build_context, rank_chunks
 from .jobs import registry, run_summary
 from .mapper import map_document
 from .reduce import REDUCE_PROMPT_VERSION
@@ -18,6 +23,8 @@ from .reducer import reduce_document
 from .scope import estimate_scope
 from .store import (
     get_chunks,
+    load_retrieval_chunks,
+    save_retrieval_chunks,
     get_document,
     load_cached_summary,
     load_document_summary,
@@ -123,6 +130,7 @@ def _job_payload(job) -> dict:
             "key_findings": job.result.key_findings,
             "outline": job.result.outline,
             "entities": job.result.entities,
+            "key_facts": job.result.key_facts,
             "gaps": job.result.gaps,
             "sections": job.result.sections,
             "degraded_sections": job.result.degraded_sections,
@@ -221,4 +229,87 @@ async def describe_document(document_id: uuid.UUID):
             "tier": scope.tier.value,
             "message": scope.message,
         },
+    }
+
+
+@router.post("/{document_id}/index")
+async def index_document(document_id: uuid.UUID):
+    """Embed every chunk so the document can be questioned.
+
+    A one-off cost per document. Cheap next to summarising: embedding is a
+    single batched call rather than one generation per chunk.
+    """
+    document = await get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="No such document.")
+
+    embedder, embed_model = make_embedder()
+    existing, _ = await load_retrieval_chunks(str(document_id), embed_model)
+    if existing:
+        return {"indexed": len(existing), "model": embed_model, "reused": True}
+
+    # Re-chunk at retrieval granularity rather than reusing the summarisation
+    # chunks: those are ~16k tokens each, far too coarse for an embedding to
+    # locate one sentence within.
+    full_text = "".join(await get_chunks(document_id))
+    pieces = split_for_retrieval(full_text)
+    vectors = await embed_chunks(pieces, embedder)
+    await save_retrieval_chunks(str(document_id), embed_model, pieces, vectors)
+    return {
+        "indexed": len(pieces),
+        "dimensions": len(vectors[0]) if vectors else 0,
+        "model": embed_model,
+        "reused": False,
+    }
+
+
+class Question(BaseModel):
+    question: str
+    top_k: int = 5
+
+
+@router.post("/{document_id}/ask")
+async def ask_document(document_id: uuid.UUID, body: Question):
+    """Answer a question from the most relevant chunks.
+
+    This is the counterpart to summarising, not a replacement: a summary
+    compresses ~130:1 and loses isolated facts, while retrieval reads the
+    original text of whichever sections actually mention the subject.
+    """
+    document = await get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="No such document.")
+
+    embedder, embed_model = make_embedder()
+    stored, texts = await load_retrieval_chunks(str(document_id), embed_model)
+    if not stored:
+        raise HTTPException(
+            status_code=409,
+            detail="Document is not indexed; POST /index first.",
+        )
+
+    query_vector = await embed_query(body.question, embedder)
+    matches = rank_chunks(query_vector, stored, texts, top_k=body.top_k)
+
+    context = build_context(matches)
+    structured, plain, answer_model = make_callers()
+    answer = await plain([
+        SystemMessage(
+            "Answer using only the document sections provided. Quote specific "
+            "values exactly. If the sections do not contain the answer, say so "
+            "rather than guessing."
+        ),
+        HumanMessage(
+            f"Sections from the document:\n\n{context}\n\n"
+            f"Question: {body.question}"
+        ),
+    ])
+
+    return {
+        "question": body.question,
+        "answer": answer,
+        "model": answer_model,
+        "sources": [
+            {"section": m.index + 1, "score": round(m.score, 4)} for m in matches
+        ],
     }

@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Large-document pipeline, phase 5 — retrieval**
+  (`backend/app/documents/retrieval.py`, `embeddings.py`, plus `/index` and
+  `/ask`): question-answering over a document, as the counterpart to
+  summarising rather than a replacement.
+  - On the same 5 MB document: **59s to index, ~10s per question**, against
+    **43 minutes** for a map-reduce pass — and it answered two questions
+    map-reduce could not. "Emergency muster point Delta-9, capacity 412" was
+    lost by *both* summarisation runs; retrieval returns it verbatim.
+  - **Retrieval re-chunks at its own granularity** (~400 tokens versus 16 000
+    for summarising), which is what makes it work. With the coarse
+    summarisation chunks every similarity score sat between 0.44 and 0.50 — no
+    discrimination at all, because a 64 KB chunk embeds to a vector dominated by
+    its boilerplate. With fine chunks the correct chunk scores 0.61 against 0.50.
+  - Fixed a bug found by that live test: the first implementation truncated each
+    chunk to 8 000 characters before embedding, and the facts under test sat at
+    offsets 11 440 and 18 795 — they were never in the index.
+  - Vectors are JSONB with cosine computed in Python: pgvector is unavailable
+    here (needs OS-level install) and at ~5 000 chunks the maths is
+    milliseconds. Answers cite the sections they came from, and the model is
+    told to say so when the retrieved text does not contain the answer —
+    verified with a question the document does not cover.
+  - Each question costs ~9s of model swapping because the VM will not hold the
+    embedding and chat models together; `OLLAMA_MAX_LOADED_MODELS=2` on the
+    Ollama service would remove it (0.6 GB + 6 GB against 11.75 GB).
+  - 18 new tests (198 backend total) covering cosine edge cases, ranking order,
+    stable tie-breaking, score thresholds, and context assembly.
+  - End-to-end on the live service with a 650 KB document, all five phases:
+    upload and scope (11 chunks, tier `confirm`), index (597 retrieval chunks in
+    12.6s), three planted facts all retrieved correctly, summarise (5.4 min, 0
+    degraded, 117 key_facts), and a cached summary served in 0.28s. Retrieval
+    found all three facts; the summary carried one — the same split the 5 MB run
+    showed, reproduced at a tenth the size.
+  - Scope estimator recalibrated a second time. `CHUNK_SUMMARY_TOKENS` 150 → 800:
+    key_facts extraction roughly quintupled output per chunk, so the previous
+    figure under-predicted by 1.7x. It now reproduces both measured runs — 87
+    chunks predicted 45.6 against 43.5 actual, 11 chunks 6.5 against 5.4.
+
 - **Large-document pipeline, phase 4 — jobs, progress and cancellation**
   (`backend/app/documents/jobs.py`, plus three endpoints): a 78-minute pipeline
   cannot be an HTTP request, so `POST /api/documents/{id}/summarize` returns

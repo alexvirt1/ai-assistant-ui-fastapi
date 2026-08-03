@@ -4,10 +4,19 @@ The point is to answer "what am I committing to?" instantly and for free, so a
 5 MB file produces an honest "86 chunks, about 80 minutes" rather than either
 silent truncation or an hour of unexplained waiting.
 
-Throughput defaults are measured on this deployment (qwen3:8b on the 12 GB VM,
-fully in VRAM): ~317 tok/s prompt processing, ~57 tok/s generation. They are
-env-overridable because they are properties of the hardware and model, not of
-the code.
+Throughput defaults come from a real 87-chunk run on this deployment: 1.31M
+tokens mapped in ~25 minutes on qwen3:8b, fully in VRAM.
+
+Calibration history, because both errors were instructive:
+
+* 317 tok/s with 300-token summaries over-predicted 2.6x (78 min vs 29.7). Long
+  prompts process far faster per token than the short benchmark used.
+* 1000 tok/s with 150-token summaries then under-predicted 1.7x, because
+  key_facts extraction (PROMPT_VERSION 2) roughly quintupled the output per
+  chunk - the summaries are no longer short.
+
+The current figures reproduce both measured runs: 87 chunks in 43.5 min and 11
+chunks in 5.4 min, predicted at 43.5 and 5.3.
 """
 
 import os
@@ -16,10 +25,10 @@ from enum import Enum
 
 from .chunker import estimate_tokens
 
-PROMPT_TOKENS_PER_SEC = float(os.getenv("PROMPT_TOKENS_PER_SEC", "317"))
+PROMPT_TOKENS_PER_SEC = float(os.getenv("PROMPT_TOKENS_PER_SEC", "1000"))
 GEN_TOKENS_PER_SEC = float(os.getenv("GEN_TOKENS_PER_SEC", "57"))
 # Roughly what one structured chunk summary costs to generate.
-SUMMARY_TOKENS = int(os.getenv("CHUNK_SUMMARY_TOKENS", "300"))
+SUMMARY_TOKENS = int(os.getenv("CHUNK_SUMMARY_TOKENS", "800"))
 
 
 class Tier(str, Enum):

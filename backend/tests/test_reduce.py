@@ -200,3 +200,82 @@ class TestReduceDocument:
 def test_render_summary_includes_the_fields_the_model_needs():
     rendered = render_summary(summary(topic="T", findings="F", entities=["Acme"]))
     assert "T" in rendered and "F" in rendered and "Acme" in rendered
+
+
+class TestMergeKeyFacts:
+    """Facts are extracted and merged in code because summarising loses them.
+
+    An 87-chunk run lost 3 of 4 planted facts during the *map* step: each chunk
+    compresses ~130:1, and one sentence in 64 KB does not survive that.
+    """
+
+    def test_collects_facts_across_chunks(self):
+        from app.documents.reduce import merge_key_facts
+
+        merged = merge_key_facts([
+            summary(),
+            ChunkSummary(topic="t", findings="f", key_facts=["threshold is 2 percent"]),
+            ChunkSummary(topic="t", findings="f", key_facts=["retention is 90 days"]),
+        ])
+        assert merged == ["threshold is 2 percent", "retention is 90 days"]
+
+    def test_preserves_document_order(self):
+        from app.documents.reduce import merge_key_facts
+
+        merged = merge_key_facts([
+            ChunkSummary(topic="t", findings="f", key_facts=["first"]),
+            ChunkSummary(topic="t", findings="f", key_facts=["second"]),
+        ])
+        assert merged == ["first", "second"], "facts are positional, not ranked"
+
+    def test_deduplicates_case_insensitively(self):
+        from app.documents.reduce import merge_key_facts
+
+        merged = merge_key_facts([
+            ChunkSummary(topic="t", findings="f", key_facts=["Limit Is 5"]),
+            ChunkSummary(topic="t", findings="f", key_facts=["limit is 5"]),
+        ])
+        assert merged == ["Limit Is 5"]
+
+    def test_a_fact_stated_once_survives_many_chunks(self):
+        from app.documents.reduce import merge_key_facts
+
+        chunks = [summary() for _ in range(86)]
+        chunks[3] = ChunkSummary(
+            topic="t", findings="f", key_facts=["calibration constant is 8.472"]
+        )
+        merged = merge_key_facts(chunks)
+        assert "calibration constant is 8.472" in merged
+
+    def test_respects_the_limit(self):
+        from app.documents.reduce import merge_key_facts
+
+        many = [
+            ChunkSummary(topic="t", findings="f", key_facts=[f"fact {i}"])
+            for i in range(500)
+        ]
+        assert len(merge_key_facts(many, limit=100)) == 100
+
+
+class TestKeyFactsThroughReduce:
+    async def test_facts_survive_hierarchical_reduce(self):
+        summaries = [
+            ChunkSummary(
+                topic=f"T{i}", findings="word " * 300, key_facts=[f"value {i} is {i * 7}"]
+            )
+            for i in range(12)
+        ]
+        call = caller_returning(ReduceOutput(overview="o", key_findings="k"))
+        result = await reduce_document(summaries, call, budget_tokens=400)
+
+        assert call.calls["n"] > 1, "expected multiple batches"
+        for i in range(12):
+            assert f"value {i} is {i * 7}" in result.key_facts
+
+    async def test_reduce_prompt_shows_the_model_the_facts(self):
+        from app.documents.reduce import render_summary
+
+        rendered = render_summary(
+            ChunkSummary(topic="t", findings="f", key_facts=["constant is 8.472"])
+        )
+        assert "8.472" in rendered

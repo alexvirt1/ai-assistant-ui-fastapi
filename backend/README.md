@@ -227,6 +227,47 @@ curl -X POST http://127.0.0.1:8000/api/documents/jobs/$JOB/cancel
   replays it from cache in seconds. Persisting job rows would add schema and
   lifecycle for very little gain.
 
+### Retrieval
+
+Summarising and question-answering are different jobs, and the pipeline treats
+them that way:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/index    # ~1 min for 5 MB
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What is the reactor calibration constant?"}'
+# -> "The reactor calibration constant is 8.472 kelvin-seconds."  (~10s)
+```
+
+Measured on the same 5 MB document: **59s to index, ~10s per question**, against
+**43 minutes** for a full map-reduce pass — and retrieval answered two questions
+that map-reduce could not, because a summary compresses ~130:1 and isolated
+facts do not survive that.
+
+**Retrieval re-chunks the document at its own granularity** (~400 tokens, versus
+16 000 for summarising) rather than reusing the summarisation chunks. This is
+the part that decides whether retrieval works at all:
+
+- A 64 KB chunk embeds to a vector dominated by whatever is most common in it,
+  so one sentence contributes almost nothing. With coarse chunks every score sat
+  between 0.44 and 0.50 — no discrimination. With fine chunks the correct chunk
+  scores 0.61 against 0.50 for the rest.
+- Truncating a coarse chunk to fit the embedding model is worse still. An
+  earlier version cut at 8 000 characters, and the two facts under test sat at
+  offsets 11 440 and 18 795 — they were never embedded at all.
+
+Vectors are stored as JSONB and cosine similarity is computed in Python:
+pgvector is not installed here and needs OS-level access, and at ~5 000 chunks
+of 768 dimensions the maths costs milliseconds. Past roughly 20 000 chunks in
+one corpus, numpy would be worth adding.
+
+**Each question costs ~9s of model swapping**, because the VM does not hold the
+embedding model and the chat model at once — embedding evicts qwen3:8b and
+answering loads it back. Setting `OLLAMA_MAX_LOADED_MODELS=2` on the Ollama
+service would remove that: the two are 0.6 GB and 6 GB against an 11.75 GB
+ceiling.
+
 ### History trimming
 
 The checkpointer keeps every message in a thread forever, but the context

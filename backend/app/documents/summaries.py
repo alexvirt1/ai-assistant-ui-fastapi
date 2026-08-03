@@ -14,7 +14,14 @@ from pydantic import BaseModel, Field
 
 # Bumping this invalidates every cached summary. Cache entries are keyed by it,
 # so a prompt change cannot silently serve results produced by the old wording.
-PROMPT_VERSION = "1"
+#
+# 2: added key_facts. An 87-chunk run lost 3 of 4 planted facts *in the map
+#    step* - each 16k-token chunk compresses to ~490 characters, roughly 130:1,
+#    and an isolated number buried in 64 KB of text is simply averaged away.
+#    Entities survived the same run because they are extracted as a list and
+#    merged in code; numbers lived only in the prose and lost. So facts are now
+#    extracted too, rather than summarised past.
+PROMPT_VERSION = "2"
 
 
 class ChunkSummary(BaseModel):
@@ -34,6 +41,14 @@ class ChunkSummary(BaseModel):
         description=(
             "Names appearing in this section: people, organisations, systems, "
             "products, or notable figures. Short strings, no descriptions."
+        ),
+    )
+    key_facts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Specific verifiable facts stated in this section, one per entry, "
+            "quoting numbers, codes and thresholds exactly as written. Extract "
+            "these rather than paraphrasing them."
         ),
     )
     uncertain: str = Field(
@@ -76,6 +91,12 @@ def build_user_prompt(text: str, index: int, total: int) -> str:
         "- entities: list every proper name that appears - people, companies, "
         "systems, products, places. Copy the names exactly. Use an empty list "
         "only if the section genuinely names none.\n"
+        "- key_facts: one entry for each specific fact this section states. A "
+        "fact is anything with a number, a measurement, a threshold, a code, "
+        "an identifier or a date. Copy the value exactly as written and give "
+        "just enough words around it to be meaningful, for example "
+        '"calibration constant is 8.472 kelvin-seconds". Do not summarise '
+        "these; extract them. A fact stated once still belongs here.\n"
         "- uncertain: note anything cut off mid-thought by the section "
         "boundary, otherwise leave it empty."
     )

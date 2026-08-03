@@ -39,12 +39,19 @@ def test_tiers_escalate_with_size():
 
 
 def test_five_megabyte_file_is_sized_realistically():
-    """The case that motivated this: a 5 MB attachment."""
+    """The case that motivated this: a 5 MB attachment.
+
+    The bound is anchored to a real run: 87 chunks mapped and reduced in 29.7
+    minutes on this deployment. An earlier calibration predicted 78 minutes for
+    the same work, which is the kind of error that makes the warning it exists
+    to give less credible rather than more.
+    """
     scope = scope_for_text(document(5 * 1024 * 1024))
     assert scope.tokens > 1_000_000
     assert 60 < scope.chunks < 120
-    # Bounded by measured prompt throughput; roughly an hour and a half.
-    assert 45 < scope.estimated_minutes < 150
+    assert 15 < scope.estimated_minutes < 60, (
+        f"estimate {scope.estimated_minutes:.0f} min is far from the measured 29.7"
+    )
     assert scope.tier is Tier.CONSIDER_RETRIEVAL
     assert "retrieval" in scope.message
 

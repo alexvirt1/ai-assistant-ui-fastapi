@@ -25,6 +25,7 @@ from .reduce import (
     build_reduce_prompt,
     collect_gaps,
     merge_entities,
+    merge_key_facts,
 )
 from .summaries import ChunkSummary
 
@@ -82,6 +83,7 @@ async def reduce_document(
     # Computed once over the original summaries, never re-derived from the
     # model's prose - so nothing is lost however many levels the recursion runs.
     entities = merge_entities(summaries)
+    key_facts = merge_key_facts(summaries)
     outline = build_outline(summaries)
     gaps = collect_gaps(summaries)
     degraded = sum(1 for s in summaries if "unvalidated prose" in s.uncertain)
@@ -119,6 +121,7 @@ async def reduce_document(
         key_findings=final.key_findings,
         outline=outline,
         entities=entities,
+        key_facts=key_facts,
         gaps=gaps,
         sections=len(summaries),
         degraded_sections=degraded,

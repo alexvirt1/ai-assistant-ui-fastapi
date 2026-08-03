@@ -76,6 +76,38 @@ CREATE TABLE IF NOT EXISTS document_summaries (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (document_id, model_name, prompt_version)
 );
+
+-- Added after the tables shipped, so ALTER rather than a column in CREATE:
+-- CREATE TABLE IF NOT EXISTS silently skips an existing table.
+ALTER TABLE chunk_summaries    ADD COLUMN IF NOT EXISTS key_facts JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS key_facts JSONB NOT NULL DEFAULT '[]';
+
+-- Vectors are stored as JSONB rather than a pgvector column: the extension is
+-- not installed here and needs OS-level access. Similarity is computed in
+-- Python, which is fine for a document's ~87 chunks.
+-- Retrieval chunks are far smaller than the summarisation chunks in
+-- document_chunks. A 16k-token chunk embeds to a vector dominated by whatever
+-- is most common in it, so a single sentence contributes almost nothing; ~400
+-- tokens keeps an embedding specific enough to find that sentence.
+CREATE TABLE IF NOT EXISTS retrieval_chunks (
+    document_id  UUID    NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    idx          INTEGER NOT NULL,
+    text         TEXT    NOT NULL,
+    model_name   TEXT    NOT NULL,
+    vector       JSONB   NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (document_id, idx, model_name)
+);
+
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    document_id  UUID    NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    idx          INTEGER NOT NULL,
+    model_name   TEXT    NOT NULL,
+    dimensions   INTEGER NOT NULL,
+    vector       JSONB   NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (document_id, idx, model_name)
+);
 """
 
 
@@ -214,7 +246,7 @@ async def load_cached_summary(
         conn.row_factory = dict_row
         row = await (
             await conn.execute(
-                "SELECT topic, findings, entities, uncertain FROM chunk_summaries"
+                "SELECT topic, findings, entities, key_facts, uncertain FROM chunk_summaries"
                 " WHERE document_id = %s AND idx = %s AND model_name = %s"
                 " AND prompt_version = %s",
                 (document_id, idx, model_name, prompt_version),
@@ -243,12 +275,12 @@ async def save_summary(
     async with await AsyncConnection.connect(url) as conn:
         await conn.execute(
             "INSERT INTO chunk_summaries (document_id, idx, model_name,"
-            " prompt_version, topic, findings, entities, uncertain, degraded)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " prompt_version, topic, findings, entities, key_facts, uncertain,"
+            " degraded) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (document_id, idx, model_name, prompt_version)"
             " DO UPDATE SET topic = EXCLUDED.topic, findings = EXCLUDED.findings,"
-            " entities = EXCLUDED.entities, uncertain = EXCLUDED.uncertain,"
-            " degraded = EXCLUDED.degraded",
+            " entities = EXCLUDED.entities, key_facts = EXCLUDED.key_facts,"
+            " uncertain = EXCLUDED.uncertain, degraded = EXCLUDED.degraded",
             (
                 document_id,
                 index,
@@ -257,6 +289,7 @@ async def save_summary(
                 summary.topic,
                 summary.findings,
                 Jsonb(summary.entities),
+                Jsonb(summary.key_facts),
                 summary.uncertain,
                 degraded,
             ),
@@ -275,7 +308,7 @@ async def load_document_summary(
         conn.row_factory = dict_row
         row = await (
             await conn.execute(
-                "SELECT overview, key_findings, outline, entities, gaps, sections,"
+                "SELECT overview, key_findings, outline, entities, key_facts, gaps, sections,"
                 " degraded_sections FROM document_summaries WHERE document_id = %s"
                 " AND model_name = %s AND prompt_version = %s",
                 (document_id, model_name, prompt_version),
@@ -296,13 +329,13 @@ async def save_document_summary(
     async with await AsyncConnection.connect(url) as conn:
         await conn.execute(
             "INSERT INTO document_summaries (document_id, model_name,"
-            " prompt_version, overview, key_findings, outline, entities, gaps,"
-            " sections, degraded_sections)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " prompt_version, overview, key_findings, outline, entities,"
+            " key_facts, gaps, sections, degraded_sections)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (document_id, model_name, prompt_version) DO UPDATE SET"
             " overview = EXCLUDED.overview, key_findings = EXCLUDED.key_findings,"
             " outline = EXCLUDED.outline, entities = EXCLUDED.entities,"
-            " gaps = EXCLUDED.gaps, sections = EXCLUDED.sections,"
+            " key_facts = EXCLUDED.key_facts, gaps = EXCLUDED.gaps, sections = EXCLUDED.sections,"
             " degraded_sections = EXCLUDED.degraded_sections",
             (
                 document_id,
@@ -312,6 +345,7 @@ async def save_document_summary(
                 summary.key_findings,
                 Jsonb(summary.outline),
                 Jsonb(summary.entities),
+                Jsonb(summary.key_facts),
                 summary.gaps,
                 summary.sections,
                 summary.degraded_sections,
@@ -333,3 +367,97 @@ async def get_chunk(document_id: uuid.UUID, idx: int) -> str | None:
             )
         ).fetchone()
     return row[0] if row else None
+
+
+async def save_embeddings(
+    document_id: str, model_name: str, vectors: list[list[float]]
+) -> None:
+    """Persist one vector per chunk, replacing any earlier run for this model."""
+    url = database_url()
+    if not url or not vectors:
+        return
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.cursor().executemany(
+            "INSERT INTO chunk_embeddings (document_id, idx, model_name,"
+            " dimensions, vector) VALUES (%s, %s, %s, %s, %s)"
+            " ON CONFLICT (document_id, idx, model_name) DO UPDATE SET"
+            " vector = EXCLUDED.vector, dimensions = EXCLUDED.dimensions",
+            [
+                (document_id, i, model_name, len(v), Jsonb(v))
+                for i, v in enumerate(vectors)
+            ],
+        )
+        await conn.commit()
+
+
+async def load_embeddings(
+    document_id: str, model_name: str
+) -> list[tuple[int, list[float]]]:
+    """Every stored vector for a document, as (chunk index, vector)."""
+    url = database_url()
+    if not url:
+        return []
+    async with await AsyncConnection.connect(url) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT idx, vector FROM chunk_embeddings"
+                " WHERE document_id = %s AND model_name = %s ORDER BY idx",
+                (document_id, model_name),
+            )
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+async def count_embeddings(document_id: str, model_name: str) -> int:
+    url = database_url()
+    if not url:
+        return 0
+    async with await AsyncConnection.connect(url) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT count(*) FROM chunk_embeddings"
+                " WHERE document_id = %s AND model_name = %s",
+                (document_id, model_name),
+            )
+        ).fetchone()
+    return row[0] if row else 0
+
+
+async def save_retrieval_chunks(
+    document_id: str, model_name: str, texts: list[str], vectors: list[list[float]]
+) -> None:
+    url = database_url()
+    if not url or not texts:
+        return
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.execute(
+            "DELETE FROM retrieval_chunks WHERE document_id = %s AND model_name = %s",
+            (document_id, model_name),
+        )
+        await conn.cursor().executemany(
+            "INSERT INTO retrieval_chunks (document_id, idx, text, model_name, vector)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            [
+                (document_id, i, t, model_name, Jsonb(v))
+                for i, (t, v) in enumerate(zip(texts, vectors))
+            ],
+        )
+        await conn.commit()
+
+
+async def load_retrieval_chunks(
+    document_id: str, model_name: str
+) -> tuple[list[tuple[int, list[float]]], dict[int, str]]:
+    """Vectors and texts for retrieval, as (index, vector) pairs plus a lookup."""
+    url = database_url()
+    if not url:
+        return [], {}
+    async with await AsyncConnection.connect(url) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT idx, vector, text FROM retrieval_chunks"
+                " WHERE document_id = %s AND model_name = %s ORDER BY idx",
+                (document_id, model_name),
+            )
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows], {r[0]: r[2] for r in rows}
