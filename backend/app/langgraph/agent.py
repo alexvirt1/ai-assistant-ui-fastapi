@@ -37,9 +37,17 @@ BASE_PROMPT = (
 )
 
 # Token budget for conversation history handed to the model, excluding the
-# system prompt and the tool schemas. Keep it well under OLLAMA_NUM_CTX so
-# there is room for both of those plus the response.
-HISTORY_MAX_TOKENS = int(os.getenv("HISTORY_MAX_TOKENS", "3000"))
+# system prompt and the tool schemas. Kept well under OLLAMA_NUM_CTX so there is
+# room for both of those plus the response.
+#
+# The default is derived from the context window rather than fixed, because the
+# two have to move together: raising OLLAMA_NUM_CTX alone leaves the extra
+# window unused, and raising this alone overflows it. A third of the window
+# matches the ratio this ran at before (3000 of 8192).
+HISTORY_MAX_TOKENS = int(
+    os.getenv("HISTORY_MAX_TOKENS")
+    or int(os.getenv("OLLAMA_NUM_CTX", "8192")) // 3
+)
 
 
 def _minimal_tail(messages: list) -> list:

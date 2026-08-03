@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   MAX_ATTACHMENT_CHARS,
+  MAX_FILE_BYTES,
   attachmentId,
   formatAttachment,
+  readAttachmentLimits,
   truncateForContext,
 } from "./attachments";
 
@@ -94,6 +96,51 @@ describe("attachmentId", () => {
       );
       expect(ids.size).toBe(50);
     });
+  });
+});
+
+describe("readAttachmentLimits", () => {
+  const saved = {
+    chars: process.env.MAX_ATTACHMENT_CHARS,
+    bytes: process.env.MAX_ATTACHMENT_BYTES,
+  };
+
+  afterEach(() => {
+    process.env.MAX_ATTACHMENT_CHARS = saved.chars;
+    process.env.MAX_ATTACHMENT_BYTES = saved.bytes;
+  });
+
+  it("falls back to the defaults when unset", () => {
+    delete process.env.MAX_ATTACHMENT_CHARS;
+    delete process.env.MAX_ATTACHMENT_BYTES;
+    expect(readAttachmentLimits()).toEqual({
+      maxChars: MAX_ATTACHMENT_CHARS,
+      maxBytes: MAX_FILE_BYTES,
+    });
+  });
+
+  it("reads configured values", () => {
+    process.env.MAX_ATTACHMENT_CHARS = "120000";
+    process.env.MAX_ATTACHMENT_BYTES = "5000000";
+    expect(readAttachmentLimits()).toEqual({
+      maxChars: 120_000,
+      maxBytes: 5_000_000,
+    });
+  });
+
+  it.each(["", "abc", "0", "-5", "NaN"])(
+    "falls back rather than accepting %o",
+    (bad) => {
+      // A typo must not silently disable the cap: an unbounded or zero limit
+      // would either flood the context window or reject every file.
+      process.env.MAX_ATTACHMENT_CHARS = bad;
+      expect(readAttachmentLimits().maxChars).toBe(MAX_ATTACHMENT_CHARS);
+    },
+  );
+
+  it("floors fractional values", () => {
+    process.env.MAX_ATTACHMENT_CHARS = "1234.9";
+    expect(readAttachmentLimits().maxChars).toBe(1234);
   });
 });
 

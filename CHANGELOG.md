@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Large-document pipeline, phase 1** (`backend/app/documents/`): upload,
+  storage, token-aware chunking, and a pre-flight scope check — all with **no
+  model calls**, so a 5 MB file is sized in milliseconds instead of silently
+  truncated to 0.46% of itself.
+  - `POST /api/documents` stores the file and returns what processing would
+    cost: for a real 5 MB upload, `87 chunks, about 78 minutes`, tier
+    `consider_retrieval`. `GET /api/documents/{id}` repeats the estimate.
+  - Documents are stored in Postgres rather than inlined into the chat message.
+    Inlined text is persisted into the LangGraph checkpoint and re-sent every
+    turn, so a large attachment would poison the thread permanently.
+  - Chunking prefers paragraph boundaries and overlaps consecutive chunks, so a
+    fact spanning a boundary survives in at least one of them. The invariant
+    that no chunk exceeds the budget is enforced and tested across budgets.
+  - Deduplication by SHA-256: re-uploading the same 5 MB file returned in 0.14s
+    versus 2.6s, with no duplicate rows. This matters more in phase 2, where it
+    will preserve per-chunk summaries that cost ~80 minutes to compute.
+  - Tier `single_pass` means a document fits one context window and skips the
+    pipeline entirely, so ordinary attachments never pay for any of this.
+  - 31 new tests (114 backend total), covering chunk budgets, overlap, coverage,
+    pathological input with no separators, tier thresholds, and that the
+    arithmetic chunk estimate stays within 10% of what the chunker really
+    produces — an estimate that drifts from reality would make the warning a lie.
+
+### Changed
+
+- **Attachment limits are now configurable** via `MAX_ATTACHMENT_CHARS` and
+  `MAX_ATTACHMENT_BYTES` in `frontend/.env.local` (see
+  `.env.local.example`). Read **server-side** in `app/page.tsx` and passed to
+  the client rather than exposed as `NEXT_PUBLIC_*`, because those are inlined
+  at build time — this way a change takes effect on a frontend restart with no
+  rebuild, which is the point when experimenting with large files. The page is
+  `force-dynamic` so the value is not frozen into a prerender. Invalid values
+  (empty, non-numeric, zero, negative) fall back to the defaults rather than
+  silently disabling the cap. `frontend/.gitignore` gained a negation so the
+  example template stays tracked while `.env.local` remains ignored.
+- **Context window 8192 → 32768**, history budget 3000 → 12000 tokens, and the
+  frontend attachment cap 6000 → 24000 characters. Measured on the 12 GB VM
+  rather than estimated: `qwen3:8b` uses 6.08 GB at 8k and 8.83 GB at its full
+  40 960-token context, **entirely in VRAM either way**, generating at 57.5 vs
+  57.6 tok/s — so ~4x more input costs nothing. 32768 leaves headroom under the
+  model's 40 960 ceiling.
+- `HISTORY_MAX_TOKENS` now defaults to a third of `OLLAMA_NUM_CTX` instead of a
+  fixed 3000. The two have to move together: raising the window alone leaves it
+  unused, raising the budget alone overflows it.
+- For the record, CPU offload is available and automatic but is the wrong tool
+  for large documents: `qwen2.5:14b` at 32k spills 3.46 GB to RAM and prompt
+  processing collapses from 621 to **47 tok/s** — a 30k-token document would
+  take ~10 minutes just to ingest, versus ~48s fully on GPU.
+
+### Fixed
+
+- `tests/test_history_trimming.py::test_history_is_actually_trimmed` asserted
+  against the deployed `HISTORY_MAX_TOKENS`, so raising it in `.env` failed a
+  test whose subject code was correct. It now pins its own budget, as the other
+  trimming tests already did.
+
+### Added
+
 - **Frontend test suite** (Vitest + Testing Library + jsdom): 23 tests, `pnpm
   test`, ~3s. Added because the `crypto.randomUUID` attachment bug passed
   `tsc`, `eslint` **and** the production build while the feature was entirely

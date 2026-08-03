@@ -79,6 +79,37 @@ describe("TextAttachmentAdapter", () => {
     expect(part.text).toContain("truncated");
   });
 
+  it("honours a configured character limit", async () => {
+    const adapter = new TextAttachmentAdapter({ maxChars: 100 });
+    const file = new File(["z".repeat(5000)], "n.txt", { type: "text/plain" });
+    const complete = await adapter.send(await adapter.add({ file }));
+    const part = complete.content[0] as { type: "text"; text: string };
+
+    expect(part.text).toContain("truncated");
+    expect(part.text.length).toBeLessThan(300);
+  });
+
+  it("honours a configured byte limit", async () => {
+    const adapter = new TextAttachmentAdapter({ maxBytes: 10 });
+    const file = new File(["more than ten bytes"], "n.txt", {
+      type: "text/plain",
+    });
+    await expect(adapter.add({ file })).rejects.toThrow(/limited to/i);
+  });
+
+  it("allows a larger limit than the default, for experimentation", async () => {
+    // The whole point of MAX_ATTACHMENT_CHARS being configurable.
+    const adapter = new TextAttachmentAdapter({ maxChars: 200_000 });
+    const file = new File(["w".repeat(150_000)], "big.txt", {
+      type: "text/plain",
+    });
+    const complete = await adapter.send(await adapter.add({ file }));
+    const part = complete.content[0] as { type: "text"; text: string };
+
+    expect(part.text).not.toContain("truncated");
+    expect(part.text.length).toBeGreaterThan(150_000);
+  });
+
   it("refuses a file larger than the hard limit before reading it", async () => {
     const huge = new File(["x".repeat(1_500_000)], "huge.txt", {
       type: "text/plain",

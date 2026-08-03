@@ -3,8 +3,11 @@
 import { AssistantRuntimeProvider, useEdgeRuntime } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react";
 import { makeMarkdownText } from "@assistant-ui/react-markdown";
+import { useMemo } from "react";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
+
+import type { AttachmentLimits } from "@/lib/attachments";
 
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { NewChatButton } from "./NewChatButton";
@@ -22,11 +25,22 @@ const MarkdownText = makeMarkdownText({
   rehypePlugins: [rehypeKatex],
 });
 
-// Constructed once rather than per render: the runtime keeps a reference to it,
-// and a fresh adapter each render would churn that reference for no reason.
-const attachmentAdapter = new TextAttachmentAdapter();
+export function MyAssistant({
+  attachmentLimits,
+}: {
+  attachmentLimits?: AttachmentLimits;
+}) {
+  // Memoised rather than rebuilt per render: the runtime holds a reference to
+  // the adapter, and churning it every render would be pointless work.
+  const attachmentAdapter = useMemo(
+    () =>
+      new TextAttachmentAdapter({
+        maxChars: attachmentLimits?.maxChars,
+        maxBytes: attachmentLimits?.maxBytes,
+      }),
+    [attachmentLimits?.maxChars, attachmentLimits?.maxBytes],
+  );
 
-export function MyAssistant() {
   const runtime = useEdgeRuntime({
     api: "/api/chat",
     unstable_AISDKInterop: true,

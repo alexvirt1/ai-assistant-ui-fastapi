@@ -41,12 +41,22 @@ def build_history(turns: int = 40) -> list:
     return messages
 
 
-def test_history_is_actually_trimmed():
+def test_history_is_actually_trimmed(monkeypatch):
+    """Pins its own budget rather than reading the deployed one.
+
+    This previously asserted against the ambient HISTORY_MAX_TOKENS, which comes
+    from .env — so raising the deployed budget failed the test even though the
+    trimming code was fine. A unit test should not depend on deployment config.
+    """
+    budget = 2000
+    monkeypatch.setattr(agent, "HISTORY_MAX_TOKENS", budget)
+
     history = build_history()
-    assert count_tokens_approximately(history) > HISTORY_MAX_TOKENS
+    assert count_tokens_approximately(history) > budget, "fixture must exceed the budget"
+
     out = make_prompt(SYSTEM)({"messages": history})
     assert len(out) < len(history)
-    assert count_tokens_approximately(out[1:]) <= HISTORY_MAX_TOKENS
+    assert count_tokens_approximately(out[1:]) <= budget
 
 
 def test_system_prompt_survives_and_leads():

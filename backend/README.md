@@ -72,8 +72,8 @@ Copy `.env.example` to `.env`. The model and server variables:
 | --- | --- |
 | `OLLAMA_MODEL` | Model name (default `qwen3:8b`). |
 | `OLLAMA_BASE_URL` | Ollama endpoint. |
-| `OLLAMA_NUM_CTX` | Context window passed to the model (default `8192`). |
-| `HISTORY_MAX_TOKENS` | Token budget for conversation history sent to the model (default `3000`). |
+| `OLLAMA_NUM_CTX` | Context window passed to the model (default `32768`). |
+| `HISTORY_MAX_TOKENS` | Token budget for conversation history (defaults to a third of `OLLAMA_NUM_CTX`, so the two scale together). |
 | `OLLAMA_KEEP_ALIVE` | How long the VM holds a model in memory (default `30m`). |
 | `MODELS_CONFIG` | Path to the model-roles YAML (default `backend/models.yaml`). |
 | `DATABASE_URL` | When set, enables per-thread conversation persistence. |
@@ -107,6 +107,47 @@ poetry run python -m app.models
 cold load costs roughly 6s for an 8B and 19s for a 14B against 0.3s once warm.
 Group work by model rather than alternating; `OLLAMA_KEEP_ALIVE` (default `30m`,
 against Ollama's own 5m) stops an idle conversation re-paying that load.
+
+### Large documents
+
+`app/documents/` is phase 1 of the map-reduce pipeline: everything needed to
+accept a large file and say what processing it would cost, **without any model
+calls**.
+
+```bash
+curl -F "file=@handbook.txt" http://127.0.0.1:8000/api/documents
+```
+
+```json
+{"id": "…", "reused": false,
+ "scope": {"tokens": 1310720, "chunks": 87, "estimated_minutes": 78.3,
+           "tier": "consider_retrieval",
+           "message": "87 chunks, about 78 minutes. If you want to ask targeted
+                       questions rather than summarise the whole document,
+                       retrieval answers in seconds instead."}}
+```
+
+A large document deliberately does **not** travel through the chat message:
+inlined text is persisted into the LangGraph checkpoint and re-sent on every
+later turn, so a 5 MB attachment would poison the thread permanently. It is
+stored in `documents` / `document_chunks` and the conversation carries only a
+reference.
+
+- **Chunking** (`chunker.py`) is token-aware, prefers paragraph boundaries, and
+  overlaps consecutive chunks so a fact spanning a boundary is not lost to both
+  neighbours. No chunk may exceed the budget — that invariant is what the tests
+  guard hardest.
+- **Sizing** (`scope.py`) is arithmetic, so a 5 MB file is sized in
+  milliseconds. Tiers: `single_pass` (fits one window — skip the pipeline
+  entirely), `quick`, `confirm` (warn first), `consider_retrieval`. Throughput
+  constants default to this deployment's measured figures (317 tok/s prompt,
+  57 tok/s generation) and are env-overridable.
+- **Storage** (`store.py`) deduplicates by SHA-256, so re-uploading the same
+  file reuses its chunks — and, once phase 2 lands, the per-chunk summaries that
+  cost 80 minutes to produce.
+
+Requires `DATABASE_URL`; without it the tables are not created and uploads
+return 503, matching how conversation persistence already degrades.
 
 ### History trimming
 

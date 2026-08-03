@@ -7,6 +7,7 @@ import type {
 } from "@assistant-ui/react";
 
 import {
+  MAX_ATTACHMENT_CHARS,
   MAX_FILE_BYTES,
   TEXT_ACCEPT,
   attachmentId,
@@ -21,17 +22,30 @@ import {
  * convert_to_langchain_messages already handles text parts. (It does *not*
  * handle file parts - those are parsed and silently dropped - so emitting text
  * is both the simplest and the only working option today.)
+ *
+ * Limits are constructor options rather than module constants so they can come
+ * from the environment; see readAttachmentLimits() in lib/attachments.ts.
  */
 export class TextAttachmentAdapter implements AttachmentAdapter {
   accept = TEXT_ACCEPT;
 
+  private readonly maxChars: number;
+  private readonly maxBytes: number;
+
+  constructor(
+    options: { maxChars?: number; maxBytes?: number } = {},
+  ) {
+    this.maxChars = options.maxChars ?? MAX_ATTACHMENT_CHARS;
+    this.maxBytes = options.maxBytes ?? MAX_FILE_BYTES;
+  }
+
   async add({ file }: { file: File }): Promise<PendingAttachment> {
-    if (file.size > MAX_FILE_BYTES) {
+    if (file.size > this.maxBytes) {
       // Thrown before the file is read: rejecting a 50 MB file is much better
       // than loading it into memory and then truncating away 99% of it.
       throw new Error(
         `"${file.name}" is ${(file.size / 1_000_000).toFixed(1)} MB. ` +
-          `Attachments are limited to ${MAX_FILE_BYTES / 1_000_000} MB.`,
+          `Attachments are limited to ${(this.maxBytes / 1_000_000).toFixed(1)} MB.`,
       );
     }
 
@@ -54,7 +68,7 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          text: formatAttachment(attachment.name, text),
+          text: formatAttachment(attachment.name, text, this.maxChars),
         },
       ],
     };
