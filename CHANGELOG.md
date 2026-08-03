@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Large-document pipeline, phase 4 — jobs, progress and cancellation**
+  (`backend/app/documents/jobs.py`, plus three endpoints): a 78-minute pipeline
+  cannot be an HTTP request, so `POST /api/documents/{id}/summarize` returns
+  immediately with a job id, `GET /api/documents/jobs/{id}` reports progress,
+  and `POST /api/documents/jobs/{id}/cancel` stops it.
+  - Verified live: start returned in **0.27s**, polling tracked `map 1/2` then
+    `reduce 0/1` with an ETA computed from the observed rate, and the job
+    completed in 1.0 min with the calibration constant retained.
+  - **Cancellation genuinely stops the work** — the job showed `0/1` eight
+    seconds after cancelling, and a second cancel is refused with 409. Chunk
+    summaries already computed survive, so a cancelled job is not wasted.
+  - **Completed summaries are stored** in a new `document_summaries` table and
+    served from it — a repeat request returned in **0.24s** instead of re-running
+    the pipeline. `?force=true` overrides.
+  - **Duplicate starts return the running job.** Two concurrent jobs over one
+    document would compete for the same single-model VM and double the wait for
+    nothing.
+  - Job state is deliberately in-memory: the expensive artefacts are in
+    Postgres, so a restart loses tracking but not work — a restarted job
+    replays from cache in seconds.
+  - 13 new tests (166 backend total) covering completion, failure capture,
+    duplicate starts, independent documents, cancellation actually halting
+    execution, refusing to cancel a finished job, phase transitions, and ETA
+    projection.
+
 - **Large-document pipeline, phase 3 — the reduce step**
   (`backend/app/documents/reducer.py`, `reduce.py`): combines chunk summaries
   into a `DocumentSummary` of `overview`, `key_findings`, `outline`, `entities`

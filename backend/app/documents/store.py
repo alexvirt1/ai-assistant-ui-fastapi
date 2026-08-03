@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .chunker import chunk_text, estimate_tokens
+from .reduce import DocumentSummary
 from .summaries import ChunkSummary
 
 # Kept in one place so the schema is greppable; created idempotently at startup.
@@ -57,6 +58,23 @@ CREATE TABLE IF NOT EXISTS chunk_summaries (
     degraded        BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (document_id, idx, model_name, prompt_version)
+);
+
+-- The finished article. Stored so a second question about the same document
+-- costs nothing, and so a completed 78-minute job survives a restart.
+CREATE TABLE IF NOT EXISTS document_summaries (
+    document_id       UUID    NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    model_name        TEXT    NOT NULL,
+    prompt_version    TEXT    NOT NULL,
+    overview          TEXT    NOT NULL,
+    key_findings      TEXT    NOT NULL,
+    outline           JSONB   NOT NULL DEFAULT '[]',
+    entities          JSONB   NOT NULL DEFAULT '[]',
+    gaps              TEXT    NOT NULL DEFAULT '',
+    sections          INTEGER NOT NULL DEFAULT 0,
+    degraded_sections INTEGER NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (document_id, model_name, prompt_version)
 );
 """
 
@@ -241,6 +259,62 @@ async def save_summary(
                 Jsonb(summary.entities),
                 summary.uncertain,
                 degraded,
+            ),
+        )
+        await conn.commit()
+
+
+async def load_document_summary(
+    document_id: str, model_name: str, prompt_version: str
+) -> DocumentSummary | None:
+    """A finished summary, if this document has already been reduced."""
+    url = database_url()
+    if not url:
+        return None
+    async with await AsyncConnection.connect(url) as conn:
+        conn.row_factory = dict_row
+        row = await (
+            await conn.execute(
+                "SELECT overview, key_findings, outline, entities, gaps, sections,"
+                " degraded_sections FROM document_summaries WHERE document_id = %s"
+                " AND model_name = %s AND prompt_version = %s",
+                (document_id, model_name, prompt_version),
+            )
+        ).fetchone()
+    return DocumentSummary(**row) if row else None
+
+
+async def save_document_summary(
+    document_id: str,
+    model_name: str,
+    prompt_version: str,
+    summary: DocumentSummary,
+) -> None:
+    url = database_url()
+    if not url:
+        return
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.execute(
+            "INSERT INTO document_summaries (document_id, model_name,"
+            " prompt_version, overview, key_findings, outline, entities, gaps,"
+            " sections, degraded_sections)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (document_id, model_name, prompt_version) DO UPDATE SET"
+            " overview = EXCLUDED.overview, key_findings = EXCLUDED.key_findings,"
+            " outline = EXCLUDED.outline, entities = EXCLUDED.entities,"
+            " gaps = EXCLUDED.gaps, sections = EXCLUDED.sections,"
+            " degraded_sections = EXCLUDED.degraded_sections",
+            (
+                document_id,
+                model_name,
+                prompt_version,
+                summary.overview,
+                summary.key_findings,
+                Jsonb(summary.outline),
+                Jsonb(summary.entities),
+                summary.gaps,
+                summary.sections,
+                summary.degraded_sections,
             ),
         )
         await conn.commit()

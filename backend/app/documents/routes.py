@@ -10,8 +10,22 @@ import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from .callers import make_callers, make_reduce_caller
+from .jobs import registry, run_summary
+from .mapper import map_document
+from .reduce import REDUCE_PROMPT_VERSION
+from .reducer import reduce_document
 from .scope import estimate_scope
-from .store import get_document, store_document
+from .store import (
+    get_chunks,
+    get_document,
+    load_cached_summary,
+    load_document_summary,
+    save_document_summary,
+    save_summary,
+    store_document,
+)
+from .summaries import PROMPT_VERSION
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -82,6 +96,110 @@ async def upload_document(file: UploadFile = File(...)):
             "message": scope.message,
         },
     }
+
+
+def _job_payload(job) -> dict:
+    payload = {
+        "job_id": job.id,
+        "document_id": job.document_id,
+        "status": job.status.value,
+        "phase": job.phase.value,
+        "completed": job.completed,
+        "total": job.total,
+        "fraction": round(job.fraction, 3),
+        "degraded": job.degraded,
+        "cached": job.cached,
+        "elapsed_seconds": round(job.elapsed_seconds),
+        "description": job.describe(),
+    }
+    eta = job.eta_seconds()
+    if eta is not None:
+        payload["eta_seconds"] = round(eta)
+    if job.error:
+        payload["error"] = job.error
+    if job.result is not None:
+        payload["summary"] = {
+            "overview": job.result.overview,
+            "key_findings": job.result.key_findings,
+            "outline": job.result.outline,
+            "entities": job.result.entities,
+            "gaps": job.result.gaps,
+            "sections": job.result.sections,
+            "degraded_sections": job.result.degraded_sections,
+        }
+    return payload
+
+
+@router.post("/{document_id}/summarize")
+async def start_summary(document_id: uuid.UUID, force: bool = False):
+    """Kick off a map-reduce summary and return immediately.
+
+    A finished summary is returned straight from storage unless `force=true`,
+    because re-running 78 minutes of work to produce the same text would be a
+    poor default.
+    """
+    document = await get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="No such document.")
+
+    map_caller, plain_caller, map_model = make_callers()
+    reduce_caller, reduce_model = make_reduce_caller()
+    version = f"{PROMPT_VERSION}/{REDUCE_PROMPT_VERSION}"
+
+    if not force:
+        cached = await load_document_summary(str(document_id), reduce_model, version)
+        if cached is not None:
+            return {"status": "completed", "cached": True, "summary": cached.__dict__}
+
+    running = registry.for_document(str(document_id))
+    if running is not None:
+        return _job_payload(running)
+
+    chunks = await get_chunks(document_id)
+    if not chunks:
+        raise HTTPException(status_code=409, detail="Document has no chunks.")
+
+    async def run(job):
+        async def map_fn(chunks, on_progress):
+            return await map_document(
+                str(document_id), chunks, map_caller, plain_caller,
+                model_name=map_model,
+                load_cached=load_cached_summary, save_summary=save_summary,
+                on_progress=on_progress,
+            )
+
+        async def reduce_fn(summaries, on_progress):
+            result = await reduce_document(summaries, reduce_caller, on_progress=on_progress)
+            await save_document_summary(str(document_id), reduce_model, version, result)
+            return result
+
+        return await run_summary(job, chunks, map_fn, reduce_fn)
+
+    job = registry.start(str(document_id), run)
+    return _job_payload(job)
+
+
+@router.get("/jobs/{job_id}")
+async def job_status(job_id: str):
+    """Poll a job. Cheap enough to call every second."""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such job.")
+    return _job_payload(job)
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Stop a running job. Chunk summaries already computed are kept."""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such job.")
+    cancelled = await registry.cancel(job_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=409, detail=f"Job is {job.status.value}, not running."
+        )
+    return _job_payload(job)
 
 
 @router.get("/{document_id}")

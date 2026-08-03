@@ -198,6 +198,35 @@ without that instruction, qwen2.5:14b dropped a calibration constant that the
 map step had correctly captured, producing a shorter, better-reading summary
 that had lost the single most important value in the document.
 
+**Running a summary** is a detached job — a 78-minute pipeline cannot be an HTTP
+request:
+
+```bash
+# start; returns immediately with a job id
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/summarize
+
+# poll (cheap enough every second)
+curl http://127.0.0.1:8000/api/documents/jobs/$JOB
+# {"status":"running","phase":"map","completed":12,"total":87,
+#  "fraction":0.138,"eta_seconds":3900,"description":"map: 12/87, ~65 min remaining"}
+
+# stop it; already-computed chunk summaries are kept
+curl -X POST http://127.0.0.1:8000/api/documents/jobs/$JOB/cancel
+```
+
+- A **completed summary is served from `document_summaries`**, so asking twice
+  costs nothing. `?force=true` re-runs it.
+- Starting a second job for the same document **returns the running one**: two
+  concurrent jobs would compete for the same single-model VM and double the
+  wait for nothing.
+- The **ETA comes from the observed rate**, not the pre-flight estimate — after
+  a few chunks the measured rate accounts for cache hits and this document's
+  actual content.
+- **Job state is in-memory by design.** The expensive artefacts live in
+  Postgres, so a restart loses the tracking but not the work: restarting a job
+  replays it from cache in seconds. Persisting job rows would add schema and
+  lifecycle for very little gain.
+
 ### History trimming
 
 The checkpointer keeps every message in a thread forever, but the context
