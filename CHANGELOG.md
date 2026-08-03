@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Frontend test suite** (Vitest + Testing Library + jsdom): 23 tests, `pnpm
+  test`, ~3s. Added because the `crypto.randomUUID` attachment bug passed
+  `tsc`, `eslint` **and** the production build while the feature was entirely
+  broken — it was a runtime, environment-dependent failure, so only tests that
+  execute the code in a stubbed browser environment can catch that class.
+  - `lib/attachments.test.ts` and
+    `components/attachments/TextAttachmentAdapter.test.ts` cover truncation,
+    the truncation marker, the hard file limit, the text-part contract with the
+    backend, and — as an explicit regression — `add()` succeeding when
+    `crypto.randomUUID` is absent.
+  - `components/ThemeToggle.test.tsx` demonstrates component coverage with
+    next-themes stubbed.
+  - Tests run in `jsdom` rather than node, since the bugs worth catching here
+    involve browser APIs behaving differently than they do in Node. Stubbing an
+    insecure context requires replacing `globalThis.crypto` wholesale —
+    `delete crypto.randomUUID` silently does nothing, which would have made the
+    regression test pass against broken code.
+  - Verified by mutation: reintroducing the `crypto.randomUUID` bug, removing
+    the size cap, dropping the truncation marker, and switching the sent part
+    from `text` to `file` each fail specific tests.
+
+- **Text file attachments** (phase 1 of attachment support). Configuring an
+  attachment adapter on `useEdgeRuntime` is enough to make the composer's "+"
+  button appear — assistant-ui's built-in `ComposerAddAttachment` opens an
+  `<input type="file">` filtered by the adapter's `accept`, so no custom UI was
+  needed. Verified by a control build: the button is absent without the adapter.
+  - `frontend/components/attachments/TextAttachmentAdapter.ts` reads the file in
+    the browser and sends it as an ordinary **text** part, which the chat route's
+    `convert_to_langchain_messages` already handles — so this needs no backend
+    change.
+  - `frontend/lib/attachments.ts` caps each attachment at 6000 characters
+    (matching the backend's `REST_TOOL_MAX_CHARS`) and appends an explicit
+    truncation marker; files over 1 MB are rejected before being read. An
+    attachment is inlined into the message and then persisted in the checkpoint,
+    so an uncapped one would compete for the model's 8192-token context on every
+    later turn of the thread — `SimpleTextAttachmentAdapter` from the library
+    has no such limit, which is why it is not used.
+  - Accepts `.txt .md .csv .tsv .json .xml .yaml .html .css .log` plus `text/*`;
+    extensions are listed alongside MIME types because browsers report
+    inconsistent types for Markdown and YAML.
+  - Attachment ids come from `attachmentId()`, which falls back when
+    `crypto.randomUUID` is missing. That API exists only in a **secure context**
+    (HTTPS or localhost), and this app is served over plain HTTP on
+    `0.0.0.0:3000` — so a browser reaching it by LAN address threw inside
+    `add()`, the attachment was never added, and the message was sent without
+    it while the model correctly reported seeing no file.
+
 ## [1.2.0] - 2026-08-03
 
 ### Added

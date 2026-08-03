@@ -6,6 +6,7 @@ import { makeMarkdownText } from "@assistant-ui/react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 
+import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { NewChatButton } from "./NewChatButton";
 import { ThemeToggle } from "./ThemeToggle";
 import {
@@ -21,10 +22,18 @@ const MarkdownText = makeMarkdownText({
   rehypePlugins: [rehypeKatex],
 });
 
+// Constructed once rather than per render: the runtime keeps a reference to it,
+// and a fresh adapter each render would churn that reference for no reason.
+const attachmentAdapter = new TextAttachmentAdapter();
+
 export function MyAssistant() {
   const runtime = useEdgeRuntime({
     api: "/api/chat",
     unstable_AISDKInterop: true,
+    // Configuring this is what makes the composer's "+" button appear: the
+    // built-in ComposerAddAttachment opens an <input type="file"> filtered by
+    // the adapter's `accept`, so no custom UI is needed.
+    adapters: { attachments: attachmentAdapter },
   });
 
   return (
