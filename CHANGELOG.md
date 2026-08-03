@@ -7,35 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-03
+
+### Added
+
+- **Model registry and Ollama VM management** (`backend/app/models/`) — phase 0
+  of the multi-step planner architecture. Code asks for a *role* (`fast`,
+  `deep`, `code`, `vision`, `embed`) instead of an Ollama tag; roles are
+  declared in `models.yaml` (see `models.example.yaml`) and resolved by
+  `make_chat_model(role)`. A role whose tag the VM does not serve falls back to
+  `fast`, mirroring how a tool with a missing API key self-disables, and
+  `OLLAMA_MODEL` still wins for the default role so existing `.env` files are
+  unaffected. `app/models/ollama.py` wraps the VM endpoints —
+  `list_available()`, `resident()`, `ensure()` (pull), `warm()` (preload),
+  `validate()` — and `python -m app.models` prints roles, inventory and what is
+  currently loaded.
+- **Test suite** (`backend/tests/`, pytest + pytest-asyncio, configured in
+  `pyproject.toml`): 83 offline tests covering model role resolution and
+  fallback, model construction, the history-trimming window, tool registration
+  and self-disabling, and REST tool construction with `{arg}` / `${ENV_VAR}`
+  interpolation. No VM, database or network required; runs in ~2s.
+  Live-infrastructure checks stay manual rather than being mocked.
+- `backend/tests/test_model_factory.py` constructs the model and asserts on the
+  resulting fields. The langgraph migration exposed that nothing exercised
+  `make_chat_model`, so a setting that silently stopped applying failed no test.
+
 ### Changed
-
-- **Frontend upgraded to Next 16 and React 19.** `next` 15.0.3 → 16.2.12,
-  `react`/`react-dom` 18.3.1 → 19.2.8, types to match, `@types/node` → 26.1.2,
-  `postcss` → 8.5.25. Next 15.0.3 accepted only React 18 or a specific 19
-  release candidate, so Next had to move first; Next 16 accepts React 18, which
-  made it a valid intermediate step. `tsconfig.json` now sets
-  `"jsx": "react-jsx"`, which Next 16 requires.
-- **ESLint 8 → 9 with flat config.** Next 16 removed the `next lint` command,
-  which silently broke the `lint` script, and `eslint-config-next` 16 requires
-  ESLint ≥ 9. `.eslintrc.json` is replaced by `eslint.config.mjs` and the script
-  is now `eslint .`. Fixing the resulting errors converted three `require()`
-  calls in `tailwind.config.ts` to ESM imports.
-- Removed `zod` and `@ai-sdk/openai` — neither was imported anywhere. Dropping
-  the latter also removed the AI SDK v6 migration from scope.
-
-### Notes
-
-- **Staying on `@assistant-ui/react` 0.7.17** rather than upgrading to 0.15.1.
-  0.15 removes everything this project's integration is built on —
-  `useEdgeRuntime`, the styled `Thread`, `makeMarkdownText`, `useMessage`,
-  `useThread`, `useAssistantRuntime` — and drops the `/tailwindcss` plugin
-  entrypoints that supply the `--aui-*` light/dark palette. The replacement
-  runtime, `useAssistantTransportRuntime`, is marked `@alpha`. The upgrade would
-  therefore be a rewrite of the presentation layer (runtime, chat UI, theming)
-  with no test coverage to catch regressions, for no feature this project needs.
-  0.7.17 declares `react: ^18 || ^19` and runs unchanged on React 19 / Next 16.
-- Consequence: 0.7.17 declares `tailwindcss: ^3.4.4` as a peer dependency, so
-  **Tailwind is pinned to 3.x** for as long as assistant-ui stays on 0.7.17.
 
 - **Migrated to langgraph 1.x** — langgraph 0.2.76 → 1.2.10, langgraph-checkpoint
   2.1.2 → 4.1.1, langgraph-checkpoint-postgres 2.0.25 → 3.1.1, langchain-core
@@ -45,15 +42,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   no version reachable from langgraph 0.2.x did. The Postgres checkpoint schema
   is unchanged — the migration lists are identical and the database was already
   at v9 — so rollback is a lockfile revert with no database action.
-- `fastapi` is now a declared dependency. `app/server.py` imports it directly
-  but it arrived only via `langserve`, a transitive of the `langchain-cli` dev
-  dependency, so a production-only install would not have had it.
+- **Frontend upgraded to Next 16 and React 19.** `next` 15.0.3 → 16.2.12,
+  `react`/`react-dom` 18.3.1 → 19.2.8, types to match, `@types/node` → 26.1.2,
+  `postcss` → 8.5.25. Next 15.0.3 accepted only React 18 or a specific 19
+  release candidate, so Next had to move first; Next 16 accepts React 18, which
+  made it a valid intermediate step. `tsconfig.json` now sets
+  `"jsx": "react-jsx"`, which Next 16 requires.
+- **ESLint 8 → 9 with flat config.** Next 16 removed the `next lint` command,
+  which silently broke the `lint` script, and `eslint-config-next` 16 requires
+  ESLint >= 9. `.eslintrc.json` is replaced by `eslint.config.mjs` and the
+  script is now `eslint .`. Fixing the resulting errors converted three
+  `require()` calls in `tailwind.config.ts` to ESM imports.
+- `uvicorn` 0.23.2 → 0.52.0, `mcp` 1.12.4 → 1.29.0, `langchain-mcp-adapters`
+  0.1.14 → 0.3.1, `sse-starlette` 1.8.2 → 3.4.6.
 - `assistant-stream` 0.0.5 → 0.0.34. Verified wire-compatible with the frontend
   before upgrading: the data-stream encoder emits the same `0:` / `b:` / `c:` /
   `a:` prefixes with identical JSON keys, confirmed by diffing raw responses
   from both versions.
-- `uvicorn` 0.23.2 → 0.52.0, `mcp` 1.12.4 → 1.29.0, `langchain-mcp-adapters`
-  0.1.14 → 0.3.1, `sse-starlette` 1.8.2 → 3.4.6.
+- `OLLAMA_KEEP_ALIVE` (default `30m`) is now passed explicitly to `ChatOllama`.
+  Ollama's own default is 5 minutes, so an idle conversation re-paid the cold
+  model load — measured at ~6s for an 8B and ~19s for a 14B, against 0.3s warm.
+  Measured while building this: the VM holds **one model at a time**; loading a
+  second evicts the first. Step-level model routing would therefore be dominated
+  by load time, so the planned executor groups steps by model rather than
+  alternating.
+- `fastapi` is now a declared dependency. `app/server.py` imports it directly
+  but it arrived only via `langserve`, a transitive of the `langchain-cli` dev
+  dependency, so a production-only install would not have had it.
 - **`langchain-cli` removed from dev dependencies.** Nothing imports it or
   `langserve`; it was the scaffolding tool that generated the project, and its
   `langserve[all]` dependency pinned `uvicorn <0.24`, blocking the upgrade. It
@@ -63,9 +78,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mcp 2.x — but they are incompatible: the adapter imports `RequestContext`
   from `mcp.shared.context`, which mcp 2.0 removed. Without the explicit pin a
   future relock could silently produce that combination.
+- Removed `zod` and `@ai-sdk/openai` from the frontend — neither was imported
+  anywhere. Dropping the latter also removed the AI SDK v6 migration from scope.
+- Version bumped to 1.2.0 (backend `pyproject.toml`, frontend `package.json`).
 
 ### Fixed
 
+- **Orphaned tool result when a single turn exceeded the history budget**
+  (`backend/app/langgraph/agent.py`): the budget-exhausted fallback returned
+  just the final message, which mid-ReAct-loop is a `ToolMessage` — sending a
+  tool result with no matching `AIMessage`, which providers reject. Reachable
+  whenever a tool returns more than the whole budget (the Yahoo Finance history
+  endpoint returns ~186 KB). The fallback now falls back to the last human turn
+  onward, keeping any tool exchange intact. Found by the new tests: sweeping
+  budgets rather than asserting at a single one exposed it.
 - **A failed MCP import could take down the whole backend**
   (`backend/app/tools/mcp/loader.py`): `connect_mcp_servers()` imported
   `MultiServerMCPClient` outside its `try`, so an incompatible
@@ -80,49 +106,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   discarded rather than raising — which would have let qwen3's reasoning
   preamble back into the chat window undetected.
 
-### Added
+### Notes
 
-- `backend/tests/test_model_factory.py`: constructs the model and asserts on the
-  resulting fields. The migration exposed that nothing exercised
-  `make_chat_model`, so a setting that silently stopped applying failed no test.
-
-- **Model registry and Ollama VM management** (`backend/app/models/`) — phase 0
-  of the multi-step planner architecture. Code asks for a *role* (`fast`,
-  `deep`, `code`, `vision`, `embed`) instead of an Ollama tag; roles are
-  declared in `models.yaml` (see `models.example.yaml`) and resolved by
-  `make_chat_model(role)`. A role whose tag the VM does not serve falls back to
-  `fast`, mirroring how a tool with a missing API key self-disables, and
-  `OLLAMA_MODEL` still wins for the default role so existing `.env` files are
-  unaffected. `app/models/ollama.py` wraps the VM endpoints —
-  `list_available()`, `resident()`, `ensure()` (pull), `warm()` (preload),
-  `validate()` — and `python -m app.models` prints roles, inventory and what is
-  currently loaded.
-- **Test suite** (`backend/tests/`, pytest + pytest-asyncio, configured in
-  `pyproject.toml`): 76 offline tests covering model role resolution and
-  fallback, the history-trimming window, tool registration and self-disabling,
-  and REST tool construction with `{arg}` / `${ENV_VAR}` interpolation. No VM,
-  database or network required; runs in ~1s. Live-infrastructure checks stay
-  manual rather than being mocked.
-
-### Fixed
-
-- **Orphaned tool result when a single turn exceeded the history budget**
-  (`backend/app/langgraph/agent.py`): the budget-exhausted fallback returned
-  just the final message, which mid-ReAct-loop is a `ToolMessage` — sending a
-  tool result with no matching `AIMessage`, which providers reject. Reachable
-  whenever a tool returns more than the whole budget (the Yahoo Finance history
-  endpoint returns ~186 KB). The fallback now falls back to the last human turn
-  onward, keeping any tool exchange intact. Found by the new tests: sweeping
-  budgets rather than asserting at a single one exposed it.
-
-- `OLLAMA_KEEP_ALIVE` (default `30m`) is now passed explicitly to `ChatOllama`.
-  Ollama's own default is 5 minutes, so an idle conversation re-paid the cold
-  model load — measured at ~6s for an 8B and ~19s for a 14B, against 0.3s warm.
-
-  Measured while building this: the VM holds **one model at a time**; loading a
-  second evicts the first. Step-level model routing would therefore be dominated
-  by load time, so the planned executor groups steps by model rather than
-  alternating.
+- **Staying on `@assistant-ui/react` 0.7.17** rather than upgrading to 0.15.1.
+  0.15 removes everything this project's integration is built on —
+  `useEdgeRuntime`, the styled `Thread`, `makeMarkdownText`, `useMessage`,
+  `useThread`, `useAssistantRuntime` — and drops the `/tailwindcss` plugin
+  entrypoints that supply the `--aui-*` light/dark palette. The replacement
+  runtime, `useAssistantTransportRuntime`, is marked `@alpha`. The upgrade would
+  therefore be a rewrite of the presentation layer (runtime, chat UI, theming)
+  with no test coverage to catch regressions, for no feature this project needs.
+  0.7.17 declares `react: ^18 || ^19` and runs unchanged on React 19 / Next 16.
+- Consequence: 0.7.17 declares `tailwindcss: ^3.4.4` as a peer dependency, so
+  **Tailwind is pinned to 3.x** for as long as assistant-ui stays on 0.7.17.
 
 ## [1.1.2] - 2026-07-31
 
