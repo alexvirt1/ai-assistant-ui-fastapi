@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Large files now reach the chat UI** (phase A of the attachment work). The
+  attachment adapter routes by size: files that fit the context window are
+  inlined as before, larger ones go to `/api/documents` and the model receives a
+  reference instead of the text. A new `search_document` tool
+  (`backend/app/tools/document_search.py`) retrieves the relevant passages —
+  indexing lazily on first use — and the agent writes the answer itself, so a
+  5 MB attachment becomes a 509-byte request. Verified live: the agent called
+  the tool unprompted and answered correctly in 4.5s.
+  - A Next proxy at `app/api/documents/[[...path]]` keeps the backend address
+    server-side. The **optional** catch-all matters: `[...path]` does not match
+    `/api/documents` itself, and Next then treats the multipart upload as a
+    Server Action and returns "Server action not found".
+  - If the upload fails the adapter degrades to a truncated inline copy with an
+    explanatory note, rather than dropping the attachment.
+  - **Document references are pinned to the system prompt**, not left in the
+    conversation. Testing showed why: on turn 3 the model replied "please
+    provide the document ID" while holding it, and at 121 messages the history
+    trimmer had discarded the reference entirely, making the document
+    permanently unreachable. The frontend now sends attached documents on every
+    request (`lib/documentStore.ts`), the chat route accepts them, and
+    `DocumentAwareState` carries them into the prompt callable, which appends
+    them to the system prompt — the one part never trimmed. The previously
+    failing turn-3 case now calls the tool and answers correctly.
+  - "New chat" clears attached documents, so they are not announced in the next
+    conversation's system prompt.
+
 - **Large-document pipeline, phase 5 — retrieval**
   (`backend/app/documents/retrieval.py`, `embeddings.py`, plus `/index` and
   `/ask`): question-answering over a document, as the counterpart to

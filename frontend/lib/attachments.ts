@@ -110,6 +110,71 @@ export function attachmentId(fileName: string): string {
   return `${fileName}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export type UploadedDocument = {
+  id: string;
+  name: string;
+  sections: number;
+  tier: string;
+  message: string;
+};
+
+/**
+ * Send a file to the document pipeline instead of inlining it.
+ *
+ * Goes through the Next proxy rather than straight to the backend so its
+ * address stays server-side.
+ */
+export async function uploadDocument(file: File): Promise<UploadedDocument> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const response = await fetch("/api/documents", { method: "POST", body: form });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Upload failed (${response.status}): ${detail.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return {
+    id: data.id,
+    name: data.name,
+    sections: data.scope?.chunks ?? 0,
+    tier: data.scope?.tier ?? "unknown",
+    message: data.scope?.message ?? "",
+  };
+}
+
+/**
+ * Start indexing without waiting for it.
+ *
+ * Embedding a 5 MB document takes about a minute. Blocking send() for that long
+ * would freeze the composer, and the search tool indexes on demand anyway - so
+ * this is a head start, not a prerequisite. Failures are deliberately ignored.
+ */
+export function startIndexing(documentId: string): void {
+  void fetch(`/api/documents/${documentId}/index`, { method: "POST" }).catch(
+    () => undefined,
+  );
+}
+
+/**
+ * The reference the model sees in place of the file's text.
+ *
+ * Deliberately a plain text part: it travels through the existing chat path
+ * with no backend plumbing, and it stays in the thread, so a question three
+ * turns later can still reach the document.
+ */
+export function formatDocumentReference(document: UploadedDocument): string {
+  return (
+    `<attached-document id="${document.id}" name="${document.name}" ` +
+    `sections="${document.sections}">\n` +
+    `This document is too large to include here. Its text is NOT in this ` +
+    `conversation. Use the search_document tool with id ${document.id} to ` +
+    `answer any question about it.\n` +
+    `</attached-document>`
+  );
+}
+
 /**
  * Wrap file text in the delimiter the model sees.
  *

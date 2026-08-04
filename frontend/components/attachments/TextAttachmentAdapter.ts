@@ -12,16 +12,25 @@ import {
   TEXT_ACCEPT,
   attachmentId,
   formatAttachment,
+  formatDocumentReference,
+  startIndexing,
+  uploadDocument,
 } from "@/lib/attachments";
+import { addDocument } from "@/lib/documentStore";
 
 /**
- * Reads a text file in the browser and sends its contents as an ordinary text
- * part.
+ * Routes an attached text file by size.
  *
- * That part shape is why this needs no backend change: the chat route's
- * convert_to_langchain_messages already handles text parts. (It does *not*
- * handle file parts - those are parsed and silently dropped - so emitting text
- * is both the simplest and the only working option today.)
+ * Small files are inlined as an ordinary text part, which the chat route's
+ * convert_to_langchain_messages already handles. (It does *not* handle file
+ * parts - those are parsed and silently dropped - so text is the only working
+ * shape today.)
+ *
+ * Files too large for the context window go to the document pipeline instead,
+ * and the model receives a reference it can search with the search_document
+ * tool. Inlining a 5 MB file would not work anyway: it is persisted into the
+ * LangGraph checkpoint and then discarded by the history trimmer, so the model
+ * would see almost none of it while the thread carried all of it forever.
  *
  * Limits are constructor options rather than module constants so they can come
  * from the environment; see readAttachmentLimits() in lib/attachments.ts.
@@ -61,17 +70,38 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const text = await attachment.file.text();
-
-    return {
+    const complete = (body: string): CompleteAttachment => ({
       ...attachment,
       status: { type: "complete" },
-      content: [
-        {
-          type: "text",
-          text: formatAttachment(attachment.name, text, this.maxChars),
-        },
-      ],
-    };
+      content: [{ type: "text", text: body }],
+    });
+
+    // Small enough to read directly: inline the whole thing, no truncation.
+    if (text.length <= this.maxChars) {
+      return complete(formatAttachment(attachment.name, text, this.maxChars));
+    }
+
+    // Too large for the context window. Hand it to the document pipeline and
+    // send the model a reference instead of the text.
+    try {
+      const document = await uploadDocument(attachment.file);
+      startIndexing(document.id);
+      // Registered so every later request carries it to the system prompt; the
+      // reference below only reaches the model on this turn.
+      addDocument(document);
+      return complete(formatDocumentReference(document));
+    } catch (error) {
+      // Falling back to a truncated inline copy is worse than the document
+      // path but far better than dropping the attachment: the user still gets
+      // an answer about the opening of their file, and the marker says what
+      // happened.
+      const reason = error instanceof Error ? error.message : String(error);
+      return complete(
+        `${formatAttachment(attachment.name, text, this.maxChars)}\n` +
+          `[Note: this document could not be uploaded for full-text search ` +
+          `(${reason}); only its opening is shown above.]`,
+      );
+    }
   }
 
   async remove(): Promise<void> {

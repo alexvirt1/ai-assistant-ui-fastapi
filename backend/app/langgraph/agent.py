@@ -10,6 +10,7 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt.chat_agent_executor import AgentState
 
 from ..models import DEFAULT_ROLE, make_chat_model
 from ..tools import compose_prompt, get_enabled_specs
@@ -48,6 +49,38 @@ HISTORY_MAX_TOKENS = int(
     os.getenv("HISTORY_MAX_TOKENS")
     or int(os.getenv("OLLAMA_NUM_CTX", "8192")) // 3
 )
+
+
+class DocumentAwareState(AgentState, total=False):
+    """Agent state plus a block describing any attached documents.
+
+    Carried in state rather than in the conversation because the conversation
+    is trimmed. An attached-document reference sent as a chat message sits in
+    the *oldest* turn, which is exactly what HISTORY_MAX_TOKENS discards first -
+    measured at 121 messages, the reference was gone and the agent could no
+    longer reach a document it had been given. Pinned to the system prompt it
+    survives any thread length.
+    """
+
+    documents: str
+
+
+def render_document_block(documents: list[dict]) -> str:
+    """The reminder appended to the system prompt, or empty if none."""
+    if not documents:
+        return ""
+    lines = [
+        f'- id={d.get("id")} name="{d.get("name", "?")}" '
+        f'sections={d.get("sections", "?")}'
+        for d in documents
+    ]
+    return (
+        "Documents attached to this conversation:\n"
+        + "\n".join(lines)
+        + "\n\nTheir text is NOT in this conversation. To answer any question "
+        "about them, call search_document with the matching id. Do not tell the "
+        "user you lack the document or ask them for its id - you have it above."
+    )
 
 
 def _minimal_tail(messages: list) -> list:
@@ -99,6 +132,12 @@ def make_prompt(system_prompt: str):
 
     def prompt(state) -> list:
         messages = state["messages"]
+        # Appended per call, so an attached document stays reachable however
+        # long the thread grows.
+        attached = state.get("documents") if hasattr(state, "get") else None
+        active_system = (
+            SystemMessage(f"{system_prompt}\n\n{attached}") if attached else system
+        )
         trimmed = trim_messages(
             messages,
             max_tokens=HISTORY_MAX_TOKENS,
@@ -116,7 +155,7 @@ def make_prompt(system_prompt: str):
         # only a system prompt would lose the user's question entirely.
         if not trimmed:
             trimmed = _minimal_tail(messages)
-        return [system] + list(trimmed)
+        return [active_system] + list(trimmed)
 
     return prompt
 
@@ -127,5 +166,6 @@ def build_graph(checkpointer=None):
         model=make_model(),
         tools=[spec.tool for spec in specs],
         prompt=make_prompt(compose_prompt(BASE_PROMPT, specs)),
+        state_schema=DocumentAwareState,
         checkpointer=checkpointer,
     )

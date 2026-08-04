@@ -14,6 +14,8 @@ from langchain_core.messages import (
 )
 from pydantic import BaseModel
 
+from .langgraph.agent import render_document_block
+
 
 class LanguageModelTextPart(BaseModel):
     type: Literal["text"]
@@ -142,11 +144,21 @@ class FrontendToolCall(BaseModel):
     parameters: dict[str, Any]
 
 
+class AttachedDocument(BaseModel):
+    id: str
+    name: Optional[str] = None
+    sections: Optional[int] = None
+
+
 class ChatRequest(BaseModel):
     id: Optional[str] = None
     threadId: Optional[str] = None
     system: Optional[str] = ""
     tools: Optional[List[FrontendToolCall]] = []
+    # Sent on every turn, not just the one carrying the attachment: the
+    # reference has to reach the system prompt, because a reference living in
+    # the conversation is trimmed away as the thread grows.
+    documents: Optional[List[AttachedDocument]] = []
     messages: List[LanguageModelV1Message]
 
 
@@ -205,8 +217,12 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 controller.append_text(text)
                 emitted_text += text
 
+            document_block = render_document_block(
+                [d.model_dump() for d in (request.documents or [])]
+            )
+
             async for msg, metadata in graph.astream(
-                {"messages": inputs},
+                {"messages": inputs, "documents": document_block},
                 {
                     "configurable": {
                         "thread_id": thread_id,

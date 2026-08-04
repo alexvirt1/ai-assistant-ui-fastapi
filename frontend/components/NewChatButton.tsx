@@ -2,6 +2,7 @@
 
 import { useAssistantRuntime, useThread } from "@assistant-ui/react";
 
+import { clearDocuments } from "@/lib/documentStore";
 import { THREAD_COOKIE } from "@/lib/thread";
 
 /**
@@ -19,6 +20,9 @@ export function NewChatButton() {
 
   const startNewChat = () => {
     document.cookie = `${THREAD_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+    // Otherwise a document attached to the old conversation would keep being
+    // announced in the new one's system prompt.
+    clearDocuments();
     runtime.switchToNewThread();
   };
 

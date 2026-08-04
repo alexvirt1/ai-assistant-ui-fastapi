@@ -137,3 +137,58 @@ def test_short_history_is_left_alone():
     history = [HumanMessage("hello"), AIMessage("hi")]
     out = make_prompt(SYSTEM)({"messages": history})
     assert out[1:] == history
+
+
+class TestAttachedDocuments:
+    """A document reference must outlive the conversation that introduced it.
+
+    Sent as a chat message it sits in the oldest turn, which is exactly what the
+    trimmer discards first: measured at 121 messages the reference was gone and
+    the agent could no longer reach a document it had been given.
+    """
+
+    BLOCK = 'Documents attached to this conversation:\n- id=abc-123 name="big.txt"'
+
+    def test_absent_when_no_document_is_attached(self):
+        out = make_prompt(SYSTEM)({"messages": [HumanMessage("hi")]})
+        assert out[0].content == SYSTEM
+
+    def test_appended_to_the_system_prompt(self):
+        out = make_prompt(SYSTEM)(
+            {"messages": [HumanMessage("hi")], "documents": self.BLOCK}
+        )
+        assert SYSTEM in out[0].content
+        assert "abc-123" in out[0].content
+
+    def test_survives_a_thread_long_enough_to_trim_everything(self):
+        messages = [HumanMessage("<attached-document id='abc'>ref</attached-document>")]
+        for i in range(60):
+            messages.append(HumanMessage(f"q{i} " + "word " * 120))
+            messages.append(AIMessage(f"a{i} " + "word " * 120))
+
+        out = make_prompt(SYSTEM)({"messages": messages, "documents": self.BLOCK})
+
+        assert not any("attached-document" in str(m.content) for m in out[1:]), (
+            "the in-conversation reference should have been trimmed away"
+        )
+        assert "abc-123" in out[0].content, "but the pinned one must survive"
+
+    def test_empty_block_is_treated_as_absent(self):
+        out = make_prompt(SYSTEM)({"messages": [HumanMessage("hi")], "documents": ""})
+        assert out[0].content == SYSTEM
+
+
+def test_render_document_block_is_empty_without_documents():
+    assert agent.render_document_block([]) == ""
+
+
+def test_render_document_block_lists_each_document():
+    block = agent.render_document_block([
+        {"id": "a1", "name": "one.txt", "sections": 5},
+        {"id": "b2", "name": "two.txt", "sections": 9},
+    ])
+    assert "a1" in block and "b2" in block
+    assert "search_document" in block
+    # The model previously replied "please provide the document ID" while
+    # holding it; the instruction says not to.
+    assert "ask them for its id" in block

@@ -3,11 +3,12 @@
 import { AssistantRuntimeProvider, useEdgeRuntime } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react";
 import { makeMarkdownText } from "@assistant-ui/react-markdown";
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 
 import type { AttachmentLimits } from "@/lib/attachments";
+import { getDocuments, subscribe } from "@/lib/documentStore";
 
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { NewChatButton } from "./NewChatButton";
@@ -41,9 +42,16 @@ export function MyAssistant({
     [attachmentLimits?.maxChars, attachmentLimits?.maxBytes],
   );
 
+  // Re-read on every change so a newly attached document is included from the
+  // very next request onwards.
+  const documents = useSyncExternalStore(subscribe, getDocuments, getDocuments);
+
   const runtime = useEdgeRuntime({
     api: "/api/chat",
     unstable_AISDKInterop: true,
+    // Merged into every request body. The backend pins these into the system
+    // prompt, which is never trimmed - unlike the conversation.
+    body: { documents },
     // Configuring this is what makes the composer's "+" button appear: the
     // built-in ComposerAddAttachment opens an <input type="file"> filtered by
     // the adapter's `accept`, so no custom UI is needed.
