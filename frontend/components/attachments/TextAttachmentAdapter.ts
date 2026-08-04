@@ -16,7 +16,7 @@ import {
   startIndexing,
   uploadDocument,
 } from "@/lib/attachments";
-import { addDocument } from "@/lib/documentStore";
+import { addDocument, setDocumentStatus } from "@/lib/documentStore";
 
 /**
  * Routes an attached text file by size.
@@ -85,10 +85,15 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
     // send the model a reference instead of the text.
     try {
       const document = await uploadDocument(attachment.file);
-      startIndexing(document.id);
-      // Registered so every later request carries it to the system prompt; the
-      // reference below only reaches the model on this turn.
+      // Registered first, and before indexing finishes: every later request
+      // carries it to the system prompt (the reference below only reaches the
+      // model on this turn), and the chip needs to exist to show "indexing".
       addDocument(document);
+      // Deliberately not awaited - embedding takes about a minute per 5 MB and
+      // send() must not block on it. The chip reports when it lands.
+      void startIndexing(document.id).then((ok) =>
+        setDocumentStatus(document.id, ok ? "ready" : "failed"),
+      );
       return complete(formatDocumentReference(document));
     } catch (error) {
       // Falling back to a truncated inline copy is worse than the document

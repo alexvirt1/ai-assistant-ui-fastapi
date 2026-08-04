@@ -16,10 +16,27 @@ import type { UploadedDocument } from "./attachments";
  * discards first — measured at 121 messages the reference was gone and the
  * agent could no longer reach a document it had been given.
  */
+/**
+ * How far along a document is.
+ *
+ * "indexing" is the honest state, not a formality: embedding a 5 MB file takes
+ * about a minute, and until it finishes a question falls through to the tool's
+ * lazy index and simply waits. Without this the UI looked idle for that minute.
+ *
+ * "failed" is not fatal - search_document indexes on demand - so it reads as a
+ * warning rather than an error.
+ */
+export type DocumentStatus = "indexing" | "ready" | "failed";
+
 export type AttachedDocument = {
   id: string;
   name: string;
   sections: number;
+  status: DocumentStatus;
+  /** Scope tier and message from upload; describes *summarising* cost, which is
+   *  not what searching costs, so it is shown as detail rather than a warning. */
+  tier: string;
+  message: string;
 };
 
 let attached: AttachedDocument[] = [];
@@ -33,8 +50,25 @@ export function addDocument(document: UploadedDocument): void {
   if (attached.some((d) => d.id === document.id)) return;
   attached = [
     ...attached,
-    { id: document.id, name: document.name, sections: document.sections },
+    {
+      id: document.id,
+      name: document.name,
+      sections: document.sections,
+      status: "indexing",
+      tier: document.tier,
+      message: document.message,
+    },
   ];
+  emit();
+}
+
+export function setDocumentStatus(id: string, status: DocumentStatus): void {
+  const current = attached.find((d) => d.id === id);
+  // No-op guard rather than an unconditional rebuild: useSyncExternalStore
+  // compares by reference, so emitting a fresh array for an unchanged status
+  // would re-render the whole thread for nothing.
+  if (!current || current.status === status) return;
+  attached = attached.map((d) => (d.id === id ? { ...d, status } : d));
   emit();
 }
 

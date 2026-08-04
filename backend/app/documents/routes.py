@@ -14,7 +14,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from .callers import make_callers, make_reduce_caller
-from .embeddings import embed_chunks, embed_query, make_embedder, split_for_retrieval
+from .embeddings import embed_query, make_embedder
+from .indexing import ensure_indexed
 from .retrieval import build_context, rank_chunks
 from .jobs import registry, run_summary
 from .mapper import map_document
@@ -23,9 +24,8 @@ from .reducer import reduce_document
 from .scope import estimate_scope
 from .store import (
     get_chunks,
-    load_retrieval_chunks,
-    save_retrieval_chunks,
     get_document,
+    load_retrieval_chunks,
     load_cached_summary,
     load_document_summary,
     save_document_summary,
@@ -244,23 +244,11 @@ async def index_document(document_id: uuid.UUID):
         raise HTTPException(status_code=404, detail="No such document.")
 
     embedder, embed_model = make_embedder()
-    existing, _ = await load_retrieval_chunks(str(document_id), embed_model)
-    if existing:
-        return {"indexed": len(existing), "model": embed_model, "reused": True}
-
-    # Re-chunk at retrieval granularity rather than reusing the summarisation
-    # chunks: those are ~16k tokens each, far too coarse for an embedding to
-    # locate one sentence within.
-    full_text = "".join(await get_chunks(document_id))
-    pieces = split_for_retrieval(full_text)
-    vectors = await embed_chunks(pieces, embedder)
-    await save_retrieval_chunks(str(document_id), embed_model, pieces, vectors)
-    return {
-        "indexed": len(pieces),
-        "dimensions": len(vectors[0]) if vectors else 0,
-        "model": embed_model,
-        "reused": False,
-    }
+    # Shared with search_document's lazy path, and serialised: the frontend
+    # fires this on upload while a question may trigger the lazy one, and both
+    # would otherwise embed the whole document.
+    count, reused = await ensure_indexed(str(document_id), embedder, embed_model)
+    return {"indexed": count, "model": embed_model, "reused": reused}
 
 
 class Question(BaseModel):

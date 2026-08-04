@@ -10,6 +10,7 @@ import remarkMath from "remark-math";
 import type { AttachmentLimits } from "@/lib/attachments";
 import { getDocuments, subscribe } from "@/lib/documentStore";
 
+import { DocumentChips } from "./attachments/DocumentChips";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { NewChatButton } from "./NewChatButton";
 import { ThemeToggle } from "./ThemeToggle";
@@ -62,9 +63,14 @@ export function MyAssistant({
     <AssistantRuntimeProvider runtime={runtime}>
       <ToolExecutionIndicators />
       <div className="flex h-full flex-col">
-        <header className="flex shrink-0 items-center justify-end gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
-          <ThemeToggle />
-          <NewChatButton />
+        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+          <DocumentChips />
+          {/* ml-auto so the controls stay right-aligned when there are no
+              chips and DocumentChips renders nothing. */}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <ThemeToggle />
+            <NewChatButton />
+          </div>
         </header>
         {/* min-h-0 so the Thread's own viewport scrolls instead of the flex
             item growing past the container. */}

@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     failing turn-3 case now calls the tool and answers correctly.
   - "New chat" clears attached documents, so they are not announced in the next
     conversation's system prompt.
+  - **Attached documents are now visible** (`components/attachments/DocumentChips.tsx`).
+    Testing a 5 MB file exposed the gap: the text is never displayed, the
+    reference goes only to the model, and embedding runs for about a minute in
+    the background, so the only sign anything had happened was the
+    `search_document` tool firing on the next question. A chip per document now
+    shows `name · N sections · preparing… → ready`, reading the same store the
+    runtime sends to the backend so it cannot disagree with what the model was
+    told is attached. `startIndexing()` returns its outcome instead of
+    discarding it, which is what drives the transition. A failed background
+    index reads as a delay rather than an error, because `search_document`
+    indexes on demand anyway. The scope estimate stays in the tooltip: it is
+    the cost of *summarising*, and showing "about 45 minutes" inline would
+    imply the next question takes that long.
+
+### Fixed
+
+- **A document could be embedded twice, concurrently**
+  (`backend/app/documents/indexing.py`). Uploading fires an index request while
+  `search_document` indexes lazily if it finds nothing, so asking a question a
+  few seconds after attaching — ordinary use — had both see an empty index and
+  both embed the whole document: ~60s of duplicated work per 5 MB on a machine
+  that runs one model at a time, with `save_retrieval_chunks` doing
+  DELETE-then-INSERT so the two passes could interleave. Both call sites now go
+  through one `ensure_indexed()` guarded by a per-document lock, which also
+  removes the duplicated indexing logic they each carried. Verified against the
+  live database on the 4 974-chunk document: three concurrent callers, a
+  booby-trapped embedder that raises if touched, and no re-embedding.
 
 - **Large-document pipeline, phase 5 — retrieval**
   (`backend/app/documents/retrieval.py`, `embeddings.py`, plus `/index` and

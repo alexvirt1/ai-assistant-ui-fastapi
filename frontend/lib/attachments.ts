@@ -145,16 +145,25 @@ export async function uploadDocument(file: File): Promise<UploadedDocument> {
 }
 
 /**
- * Start indexing without waiting for it.
+ * Index a document, resolving when it finishes.
  *
- * Embedding a 5 MB document takes about a minute. Blocking send() for that long
- * would freeze the composer, and the search tool indexes on demand anyway - so
- * this is a head start, not a prerequisite. Failures are deliberately ignored.
+ * Embedding a 5 MB document takes about a minute, so callers must not await
+ * this before sending - the search tool indexes on demand anyway, making this a
+ * head start rather than a prerequisite. The result is still worth reporting:
+ * it is what turns the document chip from "indexing" into "ready", and that
+ * minute is otherwise invisible.
+ *
+ * Never rejects. A failure here costs a slower first question, not an answer.
  */
-export function startIndexing(documentId: string): void {
-  void fetch(`/api/documents/${documentId}/index`, { method: "POST" }).catch(
-    () => undefined,
-  );
+export async function startIndexing(documentId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`/api/documents/${documentId}/index`, {
+      method: "POST",
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**

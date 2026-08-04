@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_ATTACHMENT_CHARS } from "@/lib/attachments";
+import { clearDocuments, getDocuments } from "@/lib/documentStore";
 
 import { TextAttachmentAdapter } from "./TextAttachmentAdapter";
 
@@ -201,5 +202,134 @@ describe("TextAttachmentAdapter routing", () => {
     expect(part.text).toContain("zzz");
     expect(part.text).toContain("could not be uploaded");
     expect(part.text).toContain("truncated");
+  });
+});
+
+describe("TextAttachmentAdapter document registration", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearDocuments();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const uploadResponse = {
+    id: "doc-123",
+    name: "big.txt",
+    scope: { chunks: 87, tier: "consider_retrieval", message: "87 chunks" },
+  };
+
+  /** Upload succeeds; the index call is held open until the test releases it. */
+  function mockDeferredIndex(indexOk = true) {
+    let release!: () => void;
+    const indexed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/index")) {
+        await indexed;
+        return { ok: indexOk, status: indexOk ? 200 : 500 } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => uploadResponse,
+        text: async () => JSON.stringify(uploadResponse),
+      } as Response;
+    }) as typeof fetch;
+    // Two ticks: one for the awaited fetch, one for the .then that writes status.
+    return async () => {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+  }
+
+  const bigFile = () =>
+    new File(["q".repeat(5000)], "big.txt", { type: "text/plain" });
+
+  async function sendBig() {
+    const adapter = new TextAttachmentAdapter({ maxChars: 100 });
+    return adapter.send(await adapter.add({ file: bigFile() }));
+  }
+
+  it("registers the uploaded document with its scope detail", async () => {
+    mockDeferredIndex();
+    await sendBig();
+
+    expect(getDocuments()).toMatchObject([
+      { id: "doc-123", name: "big.txt", sections: 87, message: "87 chunks" },
+    ]);
+  });
+
+  it("registers before indexing finishes, so the chip appears immediately", async () => {
+    // send() returning only after a ~1 minute embed would freeze the composer.
+    const finishIndexing = mockDeferredIndex();
+    await sendBig();
+
+    expect(getDocuments()[0]!.status).toBe("indexing");
+    await finishIndexing();
+  });
+
+  it("marks the document ready once indexing succeeds", async () => {
+    const finishIndexing = mockDeferredIndex(true);
+    await sendBig();
+    await finishIndexing();
+
+    expect(getDocuments()[0]!.status).toBe("ready");
+  });
+
+  it("marks the document failed when indexing does not succeed", async () => {
+    const finishIndexing = mockDeferredIndex(false);
+    await sendBig();
+    await finishIndexing();
+
+    expect(getDocuments()[0]!.status).toBe("failed");
+  });
+
+  it("marks the document failed when the index request throws", async () => {
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/index")) throw new Error("network down");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => uploadResponse,
+        text: async () => JSON.stringify(uploadResponse),
+      } as Response;
+    }) as typeof fetch;
+
+    // A rejection here must not surface as an unhandled promise or lose the
+    // attachment: the document is still searchable, just not pre-indexed.
+    await expect(sendBig()).resolves.toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getDocuments()[0]!.status).toBe("failed");
+  });
+
+  it("registers nothing when the upload itself fails", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => "backend down",
+    })) as unknown as typeof fetch;
+
+    await sendBig();
+
+    // Announcing a document the backend never stored would make the model
+    // call search_document with an id that does not exist.
+    expect(getDocuments()).toEqual([]);
+  });
+
+  it("registers nothing for a file small enough to inline", async () => {
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    const adapter = new TextAttachmentAdapter({ maxChars: 1000 });
+    const file = new File(["short"], "n.txt", { type: "text/plain" });
+
+    await adapter.send(await adapter.add({ file }));
+
+    expect(getDocuments()).toEqual([]);
   });
 });

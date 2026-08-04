@@ -15,14 +15,10 @@ import uuid
 
 from langchain_core.tools import tool
 
-from ..documents.embeddings import embed_chunks, embed_query, make_embedder, split_for_retrieval
+from ..documents.embeddings import embed_query, make_embedder
+from ..documents.indexing import ensure_indexed
 from ..documents.retrieval import build_context, rank_chunks
-from ..documents.store import (
-    get_chunks,
-    get_document,
-    load_retrieval_chunks,
-    save_retrieval_chunks,
-)
+from ..documents.store import get_document, load_retrieval_chunks
 from .base import ToolSpec, register
 
 logger = logging.getLogger(__name__)
@@ -48,17 +44,10 @@ async def search_document(document_id: str, question: str) -> str:
         return f"Error: no document with id {document_id}."
 
     embedder, embed_model = make_embedder()
+    # Indexes on first use, waiting rather than duplicating if the upload's
+    # background index is still running.
+    await ensure_indexed(document_id, embedder, embed_model)
     stored, texts = await load_retrieval_chunks(document_id, embed_model)
-
-    if not stored:
-        # First search on this document: embed it now. Idempotent, so a second
-        # concurrent search simply reuses the result.
-        logger.info("indexing document %s for retrieval", document_id)
-        full_text = "".join(await get_chunks(doc_uuid))
-        pieces = split_for_retrieval(full_text)
-        vectors = await embed_chunks(pieces, embedder)
-        await save_retrieval_chunks(document_id, embed_model, pieces, vectors)
-        stored, texts = await load_retrieval_chunks(document_id, embed_model)
 
     if not stored:
         return f"Error: {document.name} could not be indexed."
