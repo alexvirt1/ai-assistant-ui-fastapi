@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**Multiple chats, part 1: the registry.** Conversations were already persisted
+per `thread_id` in the LangGraph checkpointer; what was missing was any notion
+of who owns one, what to call it, or when it last moved. A `chat_threads` table
+now holds exactly that — and only that, so a conversation still has one copy and
+there is no dual write to drift. Threads are registered on their first turn and
+titled from the first non-blank line of the first prompt, truncated at a word
+boundary to 60 characters: a wrong-but-instant title beats a good one that
+appears after the answer. `GET /api/chats` lists and searches them, and
+`GET /api/chats/{id}/messages` replays a thread from the checkpoint into the
+shape assistant-ui restores from, folding each tool result into the call that
+produced it — emitted separately they render as a tool card that spins forever.
+Deleting a chat deletes its checkpoint rows too; dropping only the registry row
+would leave the transcript on disk, invisible and unreachable.
+
+Every row carries a `user_id` from the first commit, defaulting to `alice`,
+resolved through a single `current_user_id` dependency. Not decoration: the
+checkpointer will load any thread id handed to it, so before this the client
+could post a stranger's id and pull their transcript into the model's context.
+`/api/chat` now claims-or-verifies ownership before the graph runs. Verified by
+restarting under `SINGLE_USER_ID=bob`: the chat list came back empty, the other
+user's history 404'd, and a post to her thread id was refused with 403 before
+any model call. Adding real authentication is a change to that one function.
+
+Search is `ILIKE` over title and first message, with a `pg_trgm` + `btree_gin`
+composite index that both extensions create without superuser. Measured, the
+index answers `user_id = … AND … ILIKE …` in a single scan, but the planner
+prefers the plain owner btree while one user owns every row (seq scan at 2k
+rows, owner btree with a filter at 20k) — it is insurance for a long list, not
+a day-one win.
+
 ## [1.3.0] - 2026-08-05
 
 Attachments, end to end: a file dropped into the composer becomes a searchable

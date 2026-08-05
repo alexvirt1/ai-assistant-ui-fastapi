@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from .add_langgraph_route import add_langgraph_route
+from .chats import store as chat_store
+from .chats.routes import make_chats_router
 from .documents import store as document_store
 from .documents.routes import router as documents_router
 from .langgraph.agent import build_graph
@@ -34,11 +36,15 @@ async def lifespan(app: FastAPI):
     else:
         graph = build_graph()
 
-    # Document tables, alongside the checkpointer's. A no-op without
-    # DATABASE_URL, so startup degrades rather than failing.
+    # Document and chat-registry tables, alongside the checkpointer's. Both
+    # are no-ops without DATABASE_URL, so startup degrades rather than failing.
     await document_store.setup()
+    await chat_store.setup()
 
     add_langgraph_route(app, graph, "/api/chat")
+    # Registered here rather than at import: the history endpoint reads the
+    # compiled graph's state, and the graph does not exist until now.
+    app.include_router(make_chats_router(graph, checkpointer))
 
     try:
         yield

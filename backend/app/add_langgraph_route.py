@@ -4,7 +4,7 @@ from typing import Any, List, Literal, Optional, Union
 
 from assistant_stream import RunController, create_run
 from assistant_stream.serialization import DataStreamResponse
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -15,6 +15,9 @@ from langchain_core.messages import (
 )
 from pydantic import BaseModel
 
+from .chats import store as chat_store
+from .chats.messages import content_to_text
+from .identity import current_user_id
 from .langgraph.agent import render_document_block
 
 logger = logging.getLogger(__name__)
@@ -166,7 +169,10 @@ class ChatRequest(BaseModel):
 
 
 def add_langgraph_route(app: FastAPI, graph, path: str):
-    async def chat_completions(request: ChatRequest):
+    async def chat_completions(
+        request: ChatRequest,
+        user_id: str = Depends(current_user_id),
+    ):
         # inputs = convert_to_langchain_messages(request.messages)
         all_inputs = convert_to_langchain_messages(request.messages)
 
@@ -183,6 +189,26 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
         print(f"REQUEST id={request.id} threadId={request.threadId} LANGGRAPH thread_id={thread_id}",
               flush=True,
         )
+
+        # Registers the thread on its first turn and verifies ownership on
+        # every later one. The thread id is client-supplied and the
+        # checkpointer will load whatever it is handed, so this is what stops
+        # one user's id from pulling another's transcript into the context.
+        prompt_text = content_to_text(inputs[0].content) if inputs else ""
+        try:
+            await chat_store.claim_thread(
+                thread_id,
+                user_id,
+                title=chat_store.derive_title(prompt_text),
+                preview=prompt_text,
+            )
+        except chat_store.ThreadOwnershipError:
+            raise HTTPException(status_code=403, detail="Not your chat")
+        except Exception:
+            # The registry is a sidebar, not the conversation. If Postgres is
+            # unreachable the answer should still stream - the chat simply
+            # will not be listed.
+            logger.exception("could not register thread %s", thread_id)
         async def run(controller: RunController):
             tool_calls = {}
             tool_calls_by_idx = {}
@@ -287,6 +313,15 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 controller.append_text(
                     f"\n\n_Something went wrong while answering: {reason}_"
                 )
+
+            # Outside the except, so a turn that failed still counts: it
+            # happened, it is in the transcript, and the chat should sort as
+            # recently used. Failing to record it must not break the answer
+            # that was just streamed.
+            try:
+                await chat_store.touch_thread(thread_id, user_id)
+            except Exception:
+                logger.exception("could not touch thread %s", thread_id)
 
         return DataStreamResponse(create_run(run))
 
