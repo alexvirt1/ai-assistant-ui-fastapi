@@ -212,3 +212,38 @@ class TestBuildContext:
         # Older callers pass matches alone; neighbours are simply unavailable.
         context = build_context([Match(2, 1.0, "body")])
         assert "[Section 3]" in context and "body" in context
+
+
+class TestDegradedSearch:
+    """Searching when the embedding model is unavailable.
+
+    Not hypothetical: the chat model at num_ctx=32768 and the embedder together
+    exceeded an 11.75 GB card, embed_query raised cudaMalloc out of memory, the
+    tool node died and the user got an empty assistant message.
+    """
+
+    def setup_method(self):
+        self.texts = {i: f"filler text number {i}" for i in range(10)}
+        self.texts[3] = "Марья Дмитриевна Ахросимова приехала на именины"
+        self.vectors = [(i, [1.0, 0.0]) for i in range(10)]
+
+    def test_searches_lexically_when_there_is_no_query_vector(self):
+        matches = hybrid_search("Ахросимова", None, self.vectors, self.texts, top_k=3)
+        assert matches
+        assert matches[0].index == 3
+
+    def test_no_vector_still_returns_usable_matches(self):
+        matches = hybrid_search("filler", None, self.vectors, self.texts, top_k=4)
+        assert len(matches) == 4
+        assert all(m.text for m in matches)
+
+    def test_no_vector_and_no_lexical_hit_returns_nothing_rather_than_raising(self):
+        # The tool turns an empty result into "no passages matched", which is a
+        # far better answer than a blank message.
+        assert hybrid_search("zzzz", None, self.vectors, self.texts, top_k=3) == []
+
+    def test_an_empty_vector_is_treated_as_absent(self):
+        # A provider returning [] must not reach cosine_similarity, which would
+        # raise on the dimension mismatch.
+        matches = hybrid_search("Ахросимова", [], self.vectors, self.texts, top_k=3)
+        assert matches[0].index == 3

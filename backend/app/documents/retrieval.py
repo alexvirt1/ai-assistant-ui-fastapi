@@ -113,7 +113,7 @@ def reciprocal_rank_fusion(
 
 def hybrid_search(
     query: str,
-    query_vector: list[float],
+    query_vector: list[float] | None,
     chunk_vectors: list[tuple[int, list[float]]],
     texts: dict[int, str],
     top_k: int = 12,
@@ -128,11 +128,22 @@ def hybrid_search(
 
     `score` on the returned matches is the fused rank score, not a similarity -
     it orders results but has no meaning on its own.
+
+    `query_vector` may be None, in which case this is lexical search alone. That
+    is a real operating mode, not a defensive branch: embedding needs a model on
+    the GPU and can fail when the chat model is already resident, while BM25
+    needs nothing but the stored text. Degrading to it beats failing the whole
+    question - on the questions that motivated this module, lexical search alone
+    ranked the answering chunk 1st.
     """
     if top_k <= 0:
         raise ValueError("top_k must be positive")
 
-    semantic = rank_chunks(query_vector, chunk_vectors, texts, top_k=candidates)
+    semantic = (
+        rank_chunks(query_vector, chunk_vectors, texts, top_k=candidates)
+        if query_vector
+        else []
+    )
     lexical = score_chunks(query, texts)
     lexical_ranking = sorted(lexical, key=lambda i: (-lexical[i], i))[:candidates]
 

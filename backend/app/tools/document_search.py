@@ -69,14 +69,29 @@ async def search_document(document_id: str, question: str) -> str:
 
     embedder, embed_model = make_embedder()
     # Indexes on first use, waiting rather than duplicating if the upload's
-    # background index is still running.
-    await ensure_indexed(document_id, embedder, embed_model)
-    stored, texts = await load_retrieval_chunks(document_id, embed_model)
+    # background index is still running. A failure here is not fatal if the
+    # document was indexed on an earlier run.
+    try:
+        await ensure_indexed(document_id, embedder, embed_model)
+    except Exception as exc:
+        logger.warning("indexing %s failed: %s", document_id, exc)
 
+    stored, texts = await load_retrieval_chunks(document_id, embed_model)
     if not stored:
         return f"Error: {document.name} could not be indexed."
 
-    query_vector = await embed_query(question, embedder)
+    # Embedding needs a model on the GPU, and the chat model is already resident:
+    # measured on this deployment, qwen3:8b at num_ctx=32768 takes 8.16 GB and
+    # bge-m3 1.30 GB of an 11.75 GB card, so a transient allocation can fail with
+    # cudaMalloc out of memory. Raising here aborted the whole graph run and the
+    # user got an empty reply. BM25 needs no model at all, so a failed embedding
+    # costs ranking quality rather than the answer.
+    try:
+        query_vector = await embed_query(question, embedder)
+    except Exception as exc:
+        logger.warning("embedding the question failed (%s); using lexical search", exc)
+        query_vector = None
+
     matches = hybrid_search(question, query_vector, stored, texts, top_k=TOP_K)
     if not matches:
         return f"No passages in {document.name} matched that question."

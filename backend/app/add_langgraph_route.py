@@ -1,3 +1,4 @@
+import logging
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
 
@@ -15,6 +16,8 @@ from langchain_core.messages import (
 from pydantic import BaseModel
 
 from .langgraph.agent import render_document_block
+
+logger = logging.getLogger(__name__)
 
 
 class LanguageModelTextPart(BaseModel):
@@ -221,52 +224,69 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 [d.model_dump() for d in (request.documents or [])]
             )
 
-            async for msg, metadata in graph.astream(
-                {"messages": inputs, "documents": document_block},
-                {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "system": request.system,
-                        "frontend_tools": request.tools,
-                    }
-                },
-                stream_mode="messages",
-            ):
-                if isinstance(msg, ToolMessage):
-                    tool_controller = tool_calls.get(msg.tool_call_id)
-                    if tool_controller is not None:
-                        tool_controller.set_result(str(msg.content))
-                    continue
+            try:
+                async for msg, metadata in graph.astream(
+                    {"messages": inputs, "documents": document_block},
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "system": request.system,
+                            "frontend_tools": request.tools,
+                        }
+                    },
+                    stream_mode="messages",
+                ):
+                    if isinstance(msg, ToolMessage):
+                        tool_controller = tool_calls.get(msg.tool_call_id)
+                        if tool_controller is not None:
+                            tool_controller.set_result(str(msg.content))
+                        continue
 
-                if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
-                    append_deduped_text(content_to_text(msg.content))
+                    if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
+                        append_deduped_text(content_to_text(msg.content))
 
-                    for chunk in getattr(msg, "tool_call_chunks", []) or []:
-                        idx = chunk.get("index")
-                        call_id = chunk.get("id")
-                        name = chunk.get("name")
-                        args = chunk.get("args") or ""
+                        for chunk in getattr(msg, "tool_call_chunks", []) or []:
+                            idx = chunk.get("index")
+                            call_id = chunk.get("id")
+                            name = chunk.get("name")
+                            args = chunk.get("args") or ""
 
-                        if not call_id or not name:
-                            continue
+                            if not call_id or not name:
+                                continue
 
-                        # Providers that stream tool calls incrementally (OpenAI)
-                        # key the accumulation by index; Ollama delivers each call
-                        # complete in one chunk with index None, so fall back to
-                        # the call id.
-                        key = call_id if idx is None else idx
+                            # Providers that stream tool calls incrementally (OpenAI)
+                            # key the accumulation by index; Ollama delivers each call
+                            # complete in one chunk with index None, so fall back to
+                            # the call id.
+                            key = call_id if idx is None else idx
 
-                        if key not in tool_calls_by_idx:
-                            tool_controller = await controller.add_tool_call(
-                                name, call_id
-                            )
-                            tool_calls_by_idx[key] = tool_controller
-                            tool_calls[call_id] = tool_controller
-                        else:
-                            tool_controller = tool_calls_by_idx[key]
+                            if key not in tool_calls_by_idx:
+                                tool_controller = await controller.add_tool_call(
+                                    name, call_id
+                                )
+                                tool_calls_by_idx[key] = tool_controller
+                                tool_calls[call_id] = tool_controller
+                            else:
+                                tool_controller = tool_calls_by_idx[key]
 
-                        if args:
-                            tool_controller.append_args_text(str(args))
+                            if args:
+                                tool_controller.append_args_text(str(args))
+            except Exception as exc:
+                # Without this the run dies mid-stream and the user gets an
+                # assistant message with no content at all - a blank bubble with
+                # no hint that anything went wrong. Seen live when the embedding
+                # model hit cudaMalloc out of memory: the tool node raised, the
+                # graph aborted, and the UI simply showed nothing.
+                logger.exception("chat run failed")
+                # Not str(exc).splitlines()[0] - an exception with an empty
+                # message ("".splitlines() == []) would raise IndexError here,
+                # inside the handler, and write nothing at all. TimeoutError()
+                # and ValueError() both do that.
+                message = str(exc).strip()
+                reason = message.splitlines()[0][:200] if message else type(exc).__name__
+                controller.append_text(
+                    f"\n\n_Something went wrong while answering: {reason}_"
+                )
 
         return DataStreamResponse(create_run(run))
 
