@@ -75,6 +75,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     from **0/6 to 5/6**. The English document that already worked still returns
     its planted facts. Verified live.
 
+### Changed
+
+- **Embedding model: `nomic-embed-text` → `bge-m3`** (`backend/models.yaml`).
+  The `embed` role was already registry-driven, so this is configuration, not
+  code. nomic-embed-text is English-only, and on Russian it was not merely
+  weaker but close to useless. A/B on 826 chunks of *War and Peace*, six
+  questions, measuring where the answering chunk lands:
+
+  | model | gold in top-5 | gold in top-12 | separation | VRAM |
+  |---|---|---|---|---|
+  | nomic-embed-text | 1/6 | 3/6 | 0.07 | 0.3 GB |
+  | qwen3-embedding:0.6b | 5/6 | 6/6 | 0.24 | 2.2 GB |
+  | **bge-m3** | **6/6** | **6/6** | **0.24** | **1.3 GB** |
+
+  bge-m3 wins on every axis at once — best ranking, twice as fast to index
+  (34s vs 73s per 826 chunks), and the smallest of the three in VRAM, so it sits
+  alongside qwen3:8b at 7.4 GB of an 11.75 GB card and a question costs no model
+  swap.
+  - On the full re-indexed document the vector channel now ranks the answering
+    chunk **1st, 1st, 2nd, 1st, 1st, 3rd and 1st** for the seven test questions,
+    against nomic's 82nd to 374th. Passages containing the answer: **7/7**.
+  - Re-chunking under the corrected token estimator took the document from
+    2 669 to **6 238 chunks** — the Russian chunks were ~770 tokens while
+    claiming to be 400, and are now genuinely ~400, which is finer granularity
+    as well as an honest budget.
+  - Storage keys by model name, so the switch re-indexed rather than silently
+    comparing 1024-dimension vectors against 768-dimension ones, and the old
+    rows are still there to A/B against. `EMBED_DIMENSIONS` is gone: it was
+    unused and asserted 768, which is now wrong.
+  - **The fabrications are gone.** The name-day question that invented a "Князь
+    Василий Болконский", a "Борис Ростов" and an "Анна Павловна" as countess
+    Rostova now names only real characters, correctly identified — Анна
+    Михайловна Друбецкая, граф Илья Андреевич Ростов, Соня — and cites the
+    sections it used. The list is still incomplete and still mixes in the 1806
+    Moscow visit, because retrieval draws its twelve best chunks from across the
+    whole novel (2.3% to 90.7% of it) with nothing marking which belong to the
+    same occasion. That is scene disambiguation, not retrieval quality.
+
 ### Fixed
 
 - **The token estimator was 1.92x wrong on non-Latin text**

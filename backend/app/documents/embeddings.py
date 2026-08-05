@@ -22,9 +22,12 @@ logger = logging.getLogger(__name__)
 
 EMBED_ROLE = "embed"
 
-# nomic-embed-text produces 768 dimensions. Recorded per row so a model change
-# is detectable rather than silently producing meaningless similarities.
-EMBED_DIMENSIONS = 768
+# Dimensionality is a property of whichever model the `embed` role resolves to
+# (bge-m3 gives 1024, nomic-embed-text 768), so it is read from the vectors at
+# save time rather than declared here. Rows are keyed by model name, which is
+# what keeps two models' vectors from ever being compared: switching models
+# leaves the old rows untouched and indexes afresh, and cosine_similarity raises
+# on a dimension mismatch rather than returning a meaningless number.
 
 # Retrieval chunk size, deliberately far smaller than the 16k-token chunks used
 # for summarising. Two reasons, both learned the hard way:

@@ -160,7 +160,16 @@ class TestAttachedDocuments:
         assert SYSTEM in out[0].content
         assert "abc-123" in out[0].content
 
-    def test_survives_a_thread_long_enough_to_trim_everything(self):
+    def test_survives_a_thread_long_enough_to_trim_everything(self, monkeypatch):
+        """Pins its own budget, for the reason the sibling test above documents.
+
+        This read the deployed HISTORY_MAX_TOKENS, so raising it in .env made the
+        fixture stop exceeding the budget: nothing was trimmed, and a test about
+        surviving trimming passed nothing to trim. Failed the day the budget went
+        from 12000 to 20000, with the trimming code untouched.
+        """
+        monkeypatch.setattr(agent, "HISTORY_MAX_TOKENS", 2000)
+
         messages = [HumanMessage("<attached-document id='abc'>ref</attached-document>")]
         for i in range(60):
             messages.append(HumanMessage(f"q{i} " + "word " * 120))
