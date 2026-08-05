@@ -100,11 +100,25 @@ async def search_document(document_id: str, question: str) -> str:
     return (
         f"Passages from {document.name} most relevant to the question:\n\n"
         f"{context}\n\n"
-        "Answer from these passages only, and name the section each fact came "
-        "from. You may recognise this document from training - ignore anything "
-        "you recall about it, because your memory of it is unreliable and these "
-        "passages are not. If they do not contain the answer, say so plainly "
-        "rather than filling the gap."
+        "Answer from these passages only.\n"
+        # A section number can be attached to an invented fact; a verbatim quote
+        # cannot, because the quote either appears above or it does not. This is
+        # the check that turns a citation into evidence.
+        "For every fact you state, give the section number and a short verbatim "
+        "quote from that section supporting it. If you cannot quote it, do not "
+        "state it.\n"
+        # The passages are the best matches from anywhere in the document, so
+        # they routinely span different scenes and dates. Answering a question
+        # about one occasion, this model merged a later gathering into it and
+        # listed people who were not present.
+        "These passages come from different places in the document and may "
+        "describe different occasions. Do not merge them: before using a quote, "
+        "check that it really describes the one being asked about.\n"
+        "You may recognise this document from training - ignore anything you "
+        "recall about it, because your memory of it is unreliable and these "
+        "passages are not.\n"
+        "If the passages do not contain the answer, say so plainly rather than "
+        "filling the gap."
     )
 
 

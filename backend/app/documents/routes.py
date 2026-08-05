@@ -24,6 +24,7 @@ from .reducer import reduce_document
 from .scope import estimate_scope
 from .store import (
     get_chunks,
+    load_retrieval_chunk,
     get_document,
     load_retrieval_chunks,
     load_cached_summary,
@@ -302,3 +303,29 @@ async def ask_document(document_id: uuid.UUID, body: Question):
             {"section": m.index + 1, "score": round(m.score, 4)} for m in matches
         ],
     }
+
+
+@router.get("/{document_id}/sections/{section}")
+async def get_section(document_id: uuid.UUID, section: int):
+    """The text behind a citation.
+
+    Answers cite "[Section 148]"; without this the reader has no way to check
+    one, which matters most precisely where the model is least reliable. Section
+    numbers in answers are 1-based, so this converts to the 0-based index the
+    chunks are stored under.
+    """
+    if section < 1:
+        raise HTTPException(status_code=404, detail="Sections start at 1.")
+
+    document = await get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="No such document.")
+
+    _, embed_model = make_embedder()
+    text = await load_retrieval_chunk(str(document_id), embed_model, section - 1)
+    if text is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{document.name} has no section {section} indexed.",
+        )
+    return {"document": document.name, "section": section, "text": text}

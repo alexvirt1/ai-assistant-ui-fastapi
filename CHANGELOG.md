@@ -75,6 +75,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     from **0/6 to 5/6**. The English document that already worked still returns
     its planted facts. Verified live.
 
+- **Citations you can open** (`frontend/lib/remarkSections.ts`,
+  `components/attachments/SectionCitation.tsx`, plus
+  `GET /api/documents/{id}/sections/{n}`). Answers cite `[Section 148]`, but a
+  citation nobody can check is only a claim about a claim — and this is exactly
+  where the model is least reliable: on *War and Peace* it cited real sections
+  while merging two different scenes into one answer, which is invisible unless
+  you can read the passage. A remark plugin rewrites citations into links with a
+  `section:` URL and the `a` component renders them as buttons that fetch the
+  passage on demand — an answer can cite a dozen sections and most are never
+  opened. With no document attached, or more than one, a citation stays plain
+  text: the model does not say *which* document it cited, and showing a passage
+  from the wrong one is worse than showing none.
+
+- **The model must quote what it claims**
+  (`backend/app/tools/document_search.py`). A section number can be attached to
+  an invented fact; a verbatim quote cannot, because the quote either appears in
+  the passages or it does not. The tool now requires a section number *and* a
+  supporting quote per fact, and explicitly warns that the passages come from
+  different places in the document and may describe different occasions — the
+  failure that put Денисов and Долохов, who belong to the 1806 Moscow visit, at
+  an 1805 name-day. The effect is a sparser but honest answer: on the question
+  that once produced twelve confidently wrong names, it now states one fact with
+  the sentence that supports it.
+  - A 14B answering model was measured and rejected: `qwen2.5:14b` at
+    `num_ctx=32768` takes the entire 11.75 GB card, so loading the embedder
+    evicts it and every question pays a ~19s cold reload.
+
 ### Changed
 
 - **Embedding model: `nomic-embed-text` → `qwen3-embedding:0.6b`**

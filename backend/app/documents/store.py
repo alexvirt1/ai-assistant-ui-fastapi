@@ -461,3 +461,26 @@ async def load_retrieval_chunks(
             )
         ).fetchall()
     return [(r[0], r[1]) for r in rows], {r[0]: r[2] for r in rows}
+
+
+async def load_retrieval_chunk(
+    document_id: str, model_name: str, idx: int
+) -> str | None:
+    """One retrieval chunk's text, for showing a citation's source.
+
+    A targeted query rather than load_retrieval_chunks()[1][idx]: that pulls
+    every vector for the document, which on the 6 238-chunk index is megabytes
+    of JSONB to answer "what does section 148 say".
+    """
+    url = database_url()
+    if not url:
+        return None
+    async with await AsyncConnection.connect(url) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT text FROM retrieval_chunks"
+                " WHERE document_id = %s AND model_name = %s AND idx = %s",
+                (document_id, model_name, idx),
+            )
+        ).fetchone()
+    return row[0] if row else None
