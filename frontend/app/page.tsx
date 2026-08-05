@@ -1,4 +1,4 @@
-import { MyAssistant } from "@/components/MyAssistant";
+import { ChatShell } from "@/components/chats/ChatShell";
 import { readAttachmentLimits } from "@/lib/attachments";
 
 // Rendered dynamically so the attachment limits are read from the environment
@@ -11,7 +11,7 @@ export default function Home() {
 
   return (
     <main className="h-dvh">
-      <MyAssistant attachmentLimits={attachmentLimits} />
+      <ChatShell attachmentLimits={attachmentLimits} />
     </main>
   );
 }

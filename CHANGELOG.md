@@ -37,6 +37,35 @@ prefers the plain owner btree while one user owns every row (seq scan at 2k
 rows, owner btree with a filter at 20k) — it is insurance for a long list, not
 a day-one win.
 
+**Multiple chats, part 2: the sidebar.** A panel down the left side lists past
+conversations, newest first, with "New chat" and a search box above them.
+Picking one loads its transcript into the main feed. The runtime this version
+of assistant-ui provides accepts `initialMessages` only at creation, so
+switching remounts it by `key` — deliberately chosen over upgrading to 0.14 for
+`useRemoteThreadListRuntime`, which would have replaced `useEdgeRuntime` and
+touched every component in `components/`. Switching and "New chat" are disabled
+while a response streams, since remounting mid-run would silently discard the
+answer being written. The list refetches when a run starts, so a new chat
+appears while it is being answered, and again when it ends, to pick up the
+title the backend derived; if the first refetch races registration and misses,
+the second corrects it. Search is server-side and debounced, with in-flight
+requests aborted — filtering the loaded page client-side would silently search
+only the most recent page, and without cancellation a slow early response can
+land after a fast later one and repaint the list for a prefix already typed
+past.
+
+Thread ids are now minted in the browser, because the sidebar needs the id
+before the first message is sent. `crypto.randomUUID` is not available outside
+a secure context and this app is served over plain http on a LAN address, where
+it is undefined — so "New chat" would have thrown on the real deployment while
+working on localhost. The fallback builds a v4 id from `crypto.getRandomValues`,
+which carries no such restriction. Switching chats also drops the in-memory
+document list: leaving it would announce a document in the next conversation's
+system prompt that the conversation never saw. Both proxies now forward `cookie`
+and `authorization` upstream — inert with no login, present so that adding one
+is a backend change rather than a hunt for where the credential was dropped —
+and all three read the backend address from `BACKEND_URL`.
+
 ## [1.3.0] - 2026-08-05
 
 Attachments, end to end: a file dropped into the composer becomes a searchable

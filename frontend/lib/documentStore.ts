@@ -1,7 +1,7 @@
 "use client";
 
 import type { UploadedDocument } from "./attachments";
-import { THREAD_COOKIE } from "./thread";
+import { readThreadCookie } from "./thread";
 
 /**
  * Documents attached to the current conversation.
@@ -62,11 +62,7 @@ function emit() {
 const STORAGE_KEY = "assistant_attached_documents";
 
 function currentThread(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(
-    new RegExp(`(?:^|; )${THREAD_COOKIE}=([^;]*)`),
-  );
-  return match ? decodeURIComponent(match[1]!) : "";
+  return readThreadCookie() ?? "";
 }
 
 function persist(): void {
@@ -159,13 +155,32 @@ export function getDocuments(): AttachedDocument[] {
 /**
  * Empty the in-memory list without touching storage.
  *
- * Exists for tests: it reproduces a page reload, where the module is fresh but
- * localStorage still holds what the previous load wrote. Production code should
- * use clearDocuments(), which also forgets them.
+ * Used when switching conversations (see switchDocumentsToThread), and by
+ * tests to reproduce a page reload - a fresh module where localStorage still
+ * holds what the previous load wrote. To *forget* documents, which is what
+ * ending a conversation means, use clearDocuments().
  */
 export function clearDocumentsInMemoryOnly(): void {
   attached = [];
   emit();
+}
+
+/**
+ * Re-point the store at whichever conversation the thread cookie now names.
+ *
+ * Call after the cookie has been rewritten. Dropping the in-memory list is the
+ * part that matters: without it, a document attached in one chat would still
+ * be announced in the next chat's system prompt, and the model would be told
+ * it can search a document that conversation never saw.
+ *
+ * Storage holds one conversation's documents at a time, so switching away and
+ * back does not restore them yet - the attachments themselves are still in
+ * Postgres, only the association is lost. Scoping that per thread is the next
+ * piece of work.
+ */
+export function switchDocumentsToThread(): void {
+  clearDocumentsInMemoryOnly();
+  hydrateDocuments();
 }
 
 export function subscribe(listener: () => void): () => void {
