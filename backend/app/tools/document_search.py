@@ -126,10 +126,17 @@ register(
     ToolSpec(
         tool=search_document,
         prompt_hint=(
-            "When the conversation contains an <attached-document> reference, "
-            "call search_document with that id to answer questions about it. "
-            "The document's text is not in the conversation - searching is the "
-            "only way to read it."
+            # Must describe the same thing render_document_block() writes. This
+            # said "<attached-document> reference", a format that stopped being
+            # used when references moved to the system prompt, so the trigger it
+            # named appeared nowhere and the model was left to guess.
+            "When the system prompt lists attached documents, call "
+            "search_document with the matching id for EVERY question about "
+            "them, follow-up questions included. Passages already in the "
+            "conversation were retrieved for an earlier question and will not "
+            "answer a new one. The document's text is never in the "
+            "conversation, so searching is the only way to read it - web_search "
+            "and fetch_page are not substitutes and must not be used for it."
         ),
         # Retrieval needs the documents tables; without Postgres the tool would
         # fail on every call, so it self-disables like the REST tools do.

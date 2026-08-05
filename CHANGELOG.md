@@ -87,6 +87,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   opened. With no document attached, or more than one, a citation stays plain
   text: the model does not say *which* document it cited, and showing a passage
   from the wrong one is worse than showing none.
+  - The href is `#section-148`, not a `section:` protocol. react-markdown runs
+    every URL through `defaultUrlTransform`, which permits only http, https,
+    irc, mailto and xmpp and rewrites anything else to the empty string — so the
+    first version reached the renderer with `href=""` and every citation fell
+    back to plain text. All the unit tests passed, because none of them went
+    through react-markdown. A regression test now asserts that every href the
+    plugin emits survives that sanitiser.
+  - Attached documents now survive a page reload
+    (`frontend/lib/documentStore.ts`). The store was memory-only while the
+    conversation lives in Postgres, so after a refresh the thread still showed
+    an answer citing `[Section 148]` with nothing left to resolve it against —
+    the citation fell back to a dead link. Worse, the backend also stopped being
+    told a document was attached, losing the pinned system-prompt block that
+    makes it searchable at all. Persisted to localStorage keyed by thread id, so
+    a different conversation never inherits them, and hydrated from an effect
+    rather than at import so the first client render still matches the
+    server-rendered HTML.
 
 - **The model must quote what it claims**
   (`backend/app/tools/document_search.py`). A section number can be attached to
@@ -148,6 +165,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     same occasion. That is scene disambiguation, not retrieval quality.
 
 ### Fixed
+
+- **Follow-up questions were answered from stale passages, or from the
+  internet** (`backend/app/langgraph/agent.py`,
+  `app/tools/document_search.py`). A second question about an attached document
+  produced "the passages provided do not mention Napoleon… would you like me to
+  search?" — the agent reasoned over passages retrieved for the *previous*
+  question instead of searching again. Two causes, both measured:
+  - The tool hint told the model to act "when the conversation contains an
+    `<attached-document>` reference". That format stopped being emitted when
+    references moved to the system prompt, so the trigger it named appeared
+    nowhere. Hint and block now describe the same thing, with a test asserting
+    they agree.
+  - A search returns ~11 000 tokens of passages, which then sat in the history
+    as both the largest thing in the context and stale by construction.
+    Reproduced with one in the history: the agent called `web_search` and
+    `fetch_page` instead of `search_document`, answered from the internet
+    (claiming Pierre met Napoleon, which never happens), and on another run
+    cited a section number appearing nowhere in the passages. Tool results from
+    earlier turns are now blanked to a placeholder telling the model to search
+    again — the message is kept and only its content replaced, so the calling
+    AIMessage is never orphaned. Context on the reproduction fell from **11 137
+    to 170 tokens**, and both failing questions now search and answer correctly
+    with quotes.
 
 - **The token estimator was 1.92x wrong on non-Latin text**
   (`backend/app/documents/chunker.py`). It assumed 4 characters per token for

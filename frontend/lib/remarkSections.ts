@@ -7,9 +7,9 @@
  * while merging two different scenes into one answer, which is invisible unless
  * you can read the passage.
  *
- * Emits ordinary mdast link nodes with a `section:` URL rather than a custom
- * node type, so this rides the existing markdown pipeline: the only renderer
- * change is mapping the `a` component.
+ * Emits ordinary mdast link nodes rather than a custom node type, so this rides
+ * the existing markdown pipeline: the only renderer change is mapping the `a`
+ * component. See SECTION_HREF_PREFIX for why the href is a hash.
  *
  * The tree walk is hand-written rather than pulling in `unist-util-visit`:
  * pnpm's strict layout means that is not importable without adding it plus
@@ -20,7 +20,21 @@
 /** `[Section 12]`, and the plural the model sometimes writes. */
 const SECTION = /\[Sections?\s+(\d+)\]/g;
 
-export const SECTION_PROTOCOL = "section:";
+/**
+ * The href a citation link carries.
+ *
+ * A hash, not a custom `section:` protocol. react-markdown runs every URL
+ * through `defaultUrlTransform`, which permits only http, https, irc, mailto
+ * and xmpp — anything else is rewritten to the empty string. `section:148`
+ * therefore arrived at the renderer as `href=""` and every citation fell back
+ * to plain text, which is precisely how this shipped broken the first time.
+ * A leading `#` contains no colon, so the sanitiser passes it through
+ * untouched, and `javascript:` stays blocked as before.
+ *
+ * Any future change to this value must keep that property: no colon before the
+ * first `/`, `?` or `#`.
+ */
+export const SECTION_HREF_PREFIX = "#section-";
 
 type Node = {
   type: string;
@@ -31,8 +45,8 @@ type Node = {
 
 /** The section number a citation link points at, or null if it is a real link. */
 export function sectionFromHref(href: string): number | null {
-  if (!href.startsWith(SECTION_PROTOCOL)) return null;
-  const value = Number(href.slice(SECTION_PROTOCOL.length));
+  if (!href.startsWith(SECTION_HREF_PREFIX)) return null;
+  const value = Number(href.slice(SECTION_HREF_PREFIX.length));
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
@@ -49,7 +63,7 @@ function splitCitations(value: string): Node[] | null {
     if (start > cursor) out.push({ type: "text", value: value.slice(cursor, start) });
     out.push({
       type: "link",
-      url: `${SECTION_PROTOCOL}${match[1]}`,
+      url: `${SECTION_HREF_PREFIX}${match[1]}`,
       children: [{ type: "text", value: match[0] }],
     });
     cursor = start + match[0].length;

@@ -20,19 +20,32 @@ import { sectionFromHref } from "@/lib/remarkSections";
 export function SectionCitation({
   href,
   children,
-}: {
-  href?: string;
-  children?: React.ReactNode;
-}) {
+  // Destructured only to keep it out of `rest`: react-markdown passes its mdast
+  // node here, and forwarding it to the DOM makes React warn about an unknown
+  // attribute.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  node: _node,
+  ...rest
+}: React.ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
   const section = href ? sectionFromHref(href) : null;
   const documents = useSyncExternalStore(subscribe, getDocuments, getDocuments);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
-  // Not a citation, or nothing to resolve it against: render as normal.
+  // Not a citation, or nothing to resolve it against: render as a normal link.
+  // The remaining props are forwarded rather than dropped - this replaces the
+  // library's default `a`, which carries the aui-md-a class, so swallowing them
+  // would silently unstyle every real link in an answer. `node` is react-markdown's
+  // mdast node and is not a DOM attribute.
   if (section === null || documents.length !== 1) {
-    return href ? <a href={href}>{children}</a> : <>{children}</>;
+    return href ? (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    ) : (
+      <>{children}</>
+    );
   }
   const document = documents[0]!;
 

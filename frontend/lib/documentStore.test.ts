@@ -4,6 +4,8 @@ import type { UploadedDocument } from "./attachments";
 import {
   addDocument,
   clearDocuments,
+  clearDocumentsInMemoryOnly,
+  hydrateDocuments,
   getDocuments,
   setDocumentStatus,
   subscribe,
@@ -171,5 +173,106 @@ describe("documentStore", () => {
       clearDocuments();
       expect(listener).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("surviving a page reload", () => {
+  /**
+   * REGRESSION: the store was memory-only. The conversation comes back from
+   * Postgres on reload but the attachments did not, so an answer citing
+   * "[Section 148]" rendered as a dead link with nothing to resolve it against
+   * — and the backend stopped being told a document was attached at all.
+   */
+  const KEY = "assistant_attached_documents";
+
+  beforeEach(() => {
+    clearDocuments();
+    window.localStorage.clear();
+    document.cookie = "assistant_thread_id=thread-1; Path=/";
+  });
+
+  it("writes attached documents to storage", () => {
+    addDocument(uploaded());
+    expect(window.localStorage.getItem(KEY)).toContain("doc-1");
+  });
+
+  it("restores them on the next load", () => {
+    addDocument(uploaded());
+    clearDocumentsInMemoryOnly();
+    hydrateDocuments();
+    expect(getDocuments()).toHaveLength(1);
+    expect(getDocuments()[0]!.name).toBe("big.txt");
+  });
+
+  it("restores the indexing status too", () => {
+    addDocument(uploaded());
+    setDocumentStatus("doc-1", "ready");
+    clearDocumentsInMemoryOnly();
+    hydrateDocuments();
+    expect(getDocuments()[0]!.status).toBe("ready");
+  });
+
+  it("ignores documents saved under a different conversation", () => {
+    // Otherwise a new thread would announce a document it never saw.
+    addDocument(uploaded());
+    clearDocumentsInMemoryOnly();
+    document.cookie = "assistant_thread_id=thread-2; Path=/";
+    hydrateDocuments();
+    expect(getDocuments()).toEqual([]);
+  });
+
+  it("does not overwrite documents already in memory", () => {
+    // Storage must hold something *different*, or replacing memory with it is
+    // indistinguishable from leaving memory alone.
+    addDocument(uploaded({ id: "doc-live", name: "live.txt" }));
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        thread: "thread-1",
+        documents: [{ id: "doc-stale", name: "stale.txt", sections: 1, status: "ready" }],
+      }),
+    );
+
+    hydrateDocuments();
+
+    expect(getDocuments()).toHaveLength(1);
+    expect(getDocuments()[0]!.id).toBe("doc-live");
+  });
+
+  it("clearing removes them from storage", () => {
+    // "New chat" must not leave a document behind for the next conversation.
+    addDocument(uploaded());
+    clearDocuments();
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("survives corrupt storage", () => {
+    window.localStorage.setItem(KEY, "{not json");
+    expect(() => hydrateDocuments()).not.toThrow();
+    expect(getDocuments()).toEqual([]);
+  });
+
+  it("survives storage holding the wrong shape", () => {
+    window.localStorage.setItem(KEY, JSON.stringify({ thread: "thread-1", documents: "nope" }));
+    expect(() => hydrateDocuments()).not.toThrow();
+    expect(getDocuments()).toEqual([]);
+  });
+
+  it("notifies subscribers so the chips reappear", () => {
+    addDocument(uploaded());
+    clearDocumentsInMemoryOnly();
+    const listener = vi.fn();
+    subscribe(listener);
+    hydrateDocuments();
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it("does not throw when storage is unavailable", () => {
+    // Private browsing modes throw from setItem rather than returning.
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => addDocument(uploaded())).not.toThrow();
+    setItem.mockRestore();
   });
 });

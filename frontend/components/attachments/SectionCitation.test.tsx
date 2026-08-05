@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { UploadedDocument } from "@/lib/attachments";
 import { addDocument, clearDocuments } from "@/lib/documentStore";
-import { SECTION_PROTOCOL } from "@/lib/remarkSections";
+import { SECTION_HREF_PREFIX } from "@/lib/remarkSections";
 
 import { SectionCitation } from "./SectionCitation";
 
@@ -32,7 +32,7 @@ function mockSection(text: string, ok = true) {
 }
 
 const citation = (section = 148) => (
-  <SectionCitation href={`${SECTION_PROTOCOL}${section}`}>
+  <SectionCitation href={`${SECTION_HREF_PREFIX}${section}`}>
     [Section {section}]
   </SectionCitation>
 );
@@ -151,5 +151,28 @@ describe("SectionCitation", () => {
   it("renders an ordinary link unchanged", () => {
     render(<SectionCitation href="https://example.com">example</SectionCitation>);
     expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
+  });
+
+  it("keeps the styling the default link component applies", () => {
+    // This replaces the library's own `a`, which carries aui-md-a. Dropping the
+    // props it is given would silently unstyle every real link in an answer.
+    render(
+      <SectionCitation href="https://example.com" className="aui-md-a">
+        example
+      </SectionCitation>,
+    );
+    expect(screen.getByRole("link")).toHaveClass("aui-md-a");
+  });
+
+  it("does not leak react-markdown's mdast node onto the DOM", () => {
+    // `node` is not a DOM attribute; forwarding it makes React warn.
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <SectionCitation href="https://example.com" node={{ type: "link" }}>
+        example
+      </SectionCitation>,
+    );
+    expect(screen.getByRole("link")).not.toHaveAttribute("node");
+    expect(warn).not.toHaveBeenCalled();
   });
 });

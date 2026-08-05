@@ -77,10 +77,59 @@ def render_document_block(documents: list[dict]) -> str:
     return (
         "Documents attached to this conversation:\n"
         + "\n".join(lines)
-        + "\n\nTheir text is NOT in this conversation. To answer any question "
-        "about them, call search_document with the matching id. Do not tell the "
-        "user you lack the document or ask them for its id - you have it above."
+        + "\n\nTheir text is NOT in this conversation. Call search_document with "
+        "the matching id to answer ANY question about them, including follow-up "
+        "questions - passages already in the conversation were retrieved for an "
+        "earlier question and will not answer a new one. Measured: with a large "
+        "set of passages from a previous question filling the context, the model "
+        "reached for web_search instead and answered from the internet. Never "
+        "use web_search or fetch_page for a question about an attached document, "
+        "and never tell the user you lack the document or ask for its id - it is "
+        "listed above."
     )
+
+
+STALE_TOOL_RESULT = (
+    "[Passages from an earlier question in this conversation. They have been "
+    "removed because they were retrieved for that question, not this one. "
+    "Call search_document again to answer the current question.]"
+)
+
+
+def _retire_stale_tool_results(messages: list) -> list:
+    """Blank tool results from turns before the current one.
+
+    A document search returns ~11 000 tokens of passages. Left in the history
+    they are both the largest thing in the context and stale by construction -
+    chosen to answer a question that has already been answered. Measured with
+    one such result in the history, the agent stopped calling search_document
+    for the next question: it answered from those passages, reached for
+    web_search instead, and on one run invented a section number that appeared
+    nowhere in them.
+
+    The message itself is kept and only its content replaced. Dropping it would
+    orphan the AIMessage tool call that produced it, which providers reject.
+
+    Only results from *earlier* turns are retired; everything from the current
+    human turn onward is what the model is working with right now.
+    """
+    last_human = -1
+    for i, message in enumerate(messages):
+        if isinstance(message, HumanMessage):
+            last_human = i
+    if last_human <= 0:
+        return messages
+
+    out = list(messages)
+    for i in range(last_human):
+        message = out[i]
+        if isinstance(message, ToolMessage) and message.content != STALE_TOOL_RESULT:
+            out[i] = ToolMessage(
+                content=STALE_TOOL_RESULT,
+                tool_call_id=message.tool_call_id,
+                name=getattr(message, "name", None),
+            )
+    return out
 
 
 def _minimal_tail(messages: list) -> list:
@@ -138,6 +187,9 @@ def make_prompt(system_prompt: str):
         active_system = (
             SystemMessage(f"{system_prompt}\n\n{attached}") if attached else system
         )
+        # Before trimming, not after: retiring these frees the single largest
+        # block in the context, so the budget goes to actual conversation.
+        messages = _retire_stale_tool_results(messages)
         trimmed = trim_messages(
             messages,
             max_tokens=HISTORY_MAX_TOKENS,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { SECTION_PROTOCOL, remarkSections, sectionFromHref } from "./remarkSections";
+import { SECTION_HREF_PREFIX, remarkSections, sectionFromHref } from "./remarkSections";
 
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
 
@@ -16,7 +16,7 @@ const paragraphOf = (tree: Node): Node[] => tree.children![0]!.children!;
 
 describe("sectionFromHref", () => {
   it("reads the section number", () => {
-    expect(sectionFromHref(`${SECTION_PROTOCOL}148`)).toBe(148);
+    expect(sectionFromHref(`${SECTION_HREF_PREFIX}148`)).toBe(148);
   });
 
   it("ignores ordinary links", () => {
@@ -25,11 +25,11 @@ describe("sectionFromHref", () => {
   });
 
   it("rejects a non-numeric section", () => {
-    expect(sectionFromHref(`${SECTION_PROTOCOL}abc`)).toBeNull();
+    expect(sectionFromHref(`${SECTION_HREF_PREFIX}abc`)).toBeNull();
   });
 
   it("rejects section zero, since sections are one-based", () => {
-    expect(sectionFromHref(`${SECTION_PROTOCOL}0`)).toBeNull();
+    expect(sectionFromHref(`${SECTION_HREF_PREFIX}0`)).toBeNull();
   });
 });
 
@@ -37,7 +37,7 @@ describe("remarkSections", () => {
   it("turns a citation into a link node", () => {
     const nodes = paragraphOf(run(para(text("See [Section 148] for this."))));
     const link = nodes.find((n) => n.type === "link");
-    expect(link?.url).toBe(`${SECTION_PROTOCOL}148`);
+    expect(link?.url).toBe(`${SECTION_HREF_PREFIX}148`);
   });
 
   it("keeps the surrounding text intact", () => {
@@ -57,12 +57,12 @@ describe("remarkSections", () => {
       run(para(text("Both [Section 148] and [Section 149] say so."))),
     );
     const urls = nodes.filter((n) => n.type === "link").map((n) => n.url);
-    expect(urls).toEqual([`${SECTION_PROTOCOL}148`, `${SECTION_PROTOCOL}149`]);
+    expect(urls).toEqual([`${SECTION_HREF_PREFIX}148`, `${SECTION_HREF_PREFIX}149`]);
   });
 
   it("handles the plural form the model sometimes writes", () => {
     const nodes = paragraphOf(run(para(text("[Sections 12]"))));
-    expect(nodes[0]!.url).toBe(`${SECTION_PROTOCOL}12`);
+    expect(nodes[0]!.url).toBe(`${SECTION_HREF_PREFIX}12`);
   });
 
   it("leaves text without citations alone", () => {
@@ -86,7 +86,7 @@ describe("remarkSections", () => {
     const tree = para({ type: "emphasis", children: [text("see [Section 3]")] });
     run(tree);
     const emphasis = paragraphOf(tree)[0]!;
-    expect(emphasis.children!.some((n) => n.url === `${SECTION_PROTOCOL}3`)).toBe(true);
+    expect(emphasis.children!.some((n) => n.url === `${SECTION_HREF_PREFIX}3`)).toBe(true);
   });
 
   it("does not loop forever on its own output", () => {
@@ -105,5 +105,52 @@ describe("remarkSections", () => {
     // Only the bracketed citation form is a citation.
     const nodes = paragraphOf(run(para(text("section 148 of the document"))));
     expect(nodes.every((n) => n.type === "text")).toBe(true);
+  });
+});
+
+describe("surviving react-markdown's URL sanitiser", () => {
+  /**
+   * REGRESSION: the first version used a `section:148` URL. react-markdown runs
+   * every href through defaultUrlTransform, which allows only http, https, irc,
+   * mailto and xmpp and rewrites anything else to "". Citations reached the
+   * renderer with href="" and silently fell back to plain text — every unit
+   * test passed, because none of them went through react-markdown.
+   *
+   * This reimplements defaultUrlTransform's rule rather than importing it:
+   * react-markdown is a transitive dependency and pnpm's strict layout makes it
+   * unimportable from here without adding it as a direct one.
+   */
+  const survivesSanitiser = (url: string): boolean => {
+    const colon = url.indexOf(":");
+    const question = url.indexOf("?");
+    const hash = url.indexOf("#");
+    const slash = url.indexOf("/");
+    return (
+      colon === -1 ||
+      (slash !== -1 && colon > slash) ||
+      (question !== -1 && colon > question) ||
+      (hash !== -1 && colon > hash) ||
+      /^(https?|ircs?|mailto|xmpp)$/i.test(url.slice(0, colon))
+    );
+  };
+
+  it("the rule is right: it strips what react-markdown strips", () => {
+    expect(survivesSanitiser("section:148")).toBe(false);
+    expect(survivesSanitiser("javascript:alert(1)")).toBe(false);
+    expect(survivesSanitiser("https://example.com")).toBe(true);
+  });
+
+  it("the citation href survives it", () => {
+    expect(survivesSanitiser(`${SECTION_HREF_PREFIX}148`)).toBe(true);
+  });
+
+  it("every href the plugin emits survives it", () => {
+    const tree = para(text("[Section 1], [Section 148] and [Section 6238]"));
+    run(tree);
+    const urls = paragraphOf(tree)
+      .filter((n) => n.type === "link")
+      .map((n) => n.url!);
+    expect(urls).toHaveLength(3);
+    for (const url of urls) expect(survivesSanitiser(url)).toBe(true);
   });
 });
