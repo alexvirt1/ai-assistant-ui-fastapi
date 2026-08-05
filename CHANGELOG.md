@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-05
+
+Attachments, end to end: a file dropped into the composer becomes a searchable
+document with quote-backed, openable citations. What follows is one feature told
+in five parts; the entries below give the measurements behind each.
+
+**1. Attachments to documents.** Configuring an attachment adapter is enough to
+make the composer's "+" button appear. Small files are inlined as ordinary text
+parts, which the chat route already handles, so this needed no backend change;
+size is capped via `MAX_ATTACHMENT_CHARS` and `MAX_ATTACHMENT_BYTES`, read
+server-side and passed to the client so a change takes effect on restart rather
+than a rebuild. Larger files are routed by size to `/api/documents` through a
+Next proxy, and the model receives a reference instead of the text — a 5 MB
+attachment becomes a 509-byte request. If the upload fails the adapter degrades
+to a truncated inline copy rather than dropping the file. Document references
+are pinned to the system prompt, not left in the conversation, because the
+history trimmer had been discarding them and making an attached document
+permanently unreachable; the frontend resends them on every request and persists
+them to localStorage keyed by thread id, so they survive a reload, and "New
+chat" clears them. A chip per document shows `name · N sections · preparing… →
+ready`, reading the same store the runtime sends to the backend so it cannot
+disagree with what the model was told is attached.
+
+**2. Backend document pipeline** (`backend/app/documents/`, thirteen modules)
+built in five phases: upload, Postgres storage, token-aware chunking and a
+pre-flight cost estimate with no model calls; a map step producing one
+structured summary per chunk, cached so an 80-minute job killed at chunk 60
+keeps the first 59; a reduce step merging entities, outline and gaps
+deterministically in code rather than by the model; background jobs with
+progress, ETA and real cancellation; and retrieval. Retrieval is the clear
+winner over summarising — 59s to index and roughly 10s per question against
+43 minutes for a map-reduce pass over the same 5 MB document, answering two
+questions map-reduce could not — because it re-chunks at its own granularity,
+~400 tokens against 16 000. Vectors are JSONB with cosine computed in Python,
+since pgvector is unavailable here. A `search_document` tool retrieves passages
+and indexes lazily on first use; the agent calls it unprompted.
+
+**3. Retrieval quality.** BM25 is fused with the vector search by reciprocal
+rank, with candidates capped per channel — fusing full rankings measured worse
+than lexical search alone. On Russian text the vector channel ranked the correct
+chunk 168th and 374th with `top_k=5` where BM25 put both at rank 1, and end to
+end, passages containing the answer went from 0/6 to 5/6. The embedding model
+changed from `nomic-embed-text` to `qwen3-embedding:0.6b`; bge-m3 scores
+marginally better but cannot run on an 11.75 GB card alongside the chat model at
+32k context. The tool now requires a section number *and* a supporting quote per
+fact — sparser but honest: the question that once produced twelve confidently
+wrong names now states one fact with the sentence that supports it. A remark
+plugin rewrites `[Section 148]` into a button that fetches the passage on
+demand, and a citation stays plain text when no document is attached or more
+than one is, since showing a passage from the wrong document is worse than
+showing none.
+
+**4. Notable fixes.** The token estimator was 1.92x wrong on non-Latin text and
+is now script-aware and shared with the history trimmer, so the two budgets
+cannot drift. Follow-up questions were answered from stale passages, or from the
+internet; blanking earlier tool results took the reproduction from 11 137 to 170
+tokens. A failed run showed an empty assistant bubble because `graph.astream`
+had no exception handling. A document could be embedded twice concurrently, now
+guarded by one `ensure_indexed()`. A GPU out-of-memory cost the whole answer;
+search degrades to lexical-only, which needs no model on the GPU.
+
+**5. Infrastructure.** Context window 8192 to 32768 and history budget 3000 to
+12000 tokens, the latter now defaulting to a third of the former so the two
+scale together — measured, 4x more input costs nothing in throughput on this
+card. A new frontend test suite (Vitest, Testing Library, jsdom) alongside
+roughly 200 backend tests, 14 new test files in all. React 18 to 19, Next 15 to
+16, ESLint 8 to 9 flat config, `@ai-sdk/openai` and `zod` dropped.
+
 ### Added
 
 - **Large files now reach the chat UI** (phase A of the attachment work). The
