@@ -77,7 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Embedding model: `nomic-embed-text` → `bge-m3`** (`backend/models.yaml`).
+- **Embedding model: `nomic-embed-text` → `qwen3-embedding:0.6b`**
+  (`backend/models.yaml`).
   The `embed` role was already registry-driven, so this is configuration, not
   code. nomic-embed-text is English-only, and on Russian it was not merely
   weaker but close to useless. A/B on 826 chunks of *War and Peace*, six
@@ -89,10 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   | qwen3-embedding:0.6b | 5/6 | 6/6 | 0.24 | 2.2 GB |
   | **bge-m3** | **6/6** | **6/6** | **0.24** | **1.3 GB** |
 
-  bge-m3 wins on every axis at once — best ranking, twice as fast to index
-  (34s vs 73s per 826 chunks), and the smallest of the three in VRAM, so it sits
-  alongside qwen3:8b at 7.4 GB of an 11.75 GB card and a question costs no model
-  swap.
+  bge-m3 ranks best on paper but **cannot run on this card**. Loading it needs
+  ~5 GB transient despite settling at 1.3 GB, and with qwen3:8b resident at
+  `num_ctx=32768` (8.16 GB of 11.75 GB) it dies with `cudaMalloc out of memory`.
+  Measured alongside the real 32k chat model: qwen3-embedding 10.33 GB and
+  works, bge-m3 OOMs, and bge-m3 fits only if `OLLAMA_NUM_CTX` drops to 16384 or
+  `OLLAMA_MAX_LOADED_MODELS=1` forces a swap on every question. Since retrieval
+  fuses with BM25 at `top_k=12`, where both score 6/6, the model that runs wins.
+  (bge-m3 was briefly configured on the strength of a benchmark taken without
+  production's `num_ctx`, which made the chat model look 2 GB smaller than it
+  is; it OOM'd in the UI within minutes.)
   - On the full re-indexed document the vector channel now ranks the answering
     chunk **1st, 1st, 2nd, 1st, 1st, 3rd and 1st** for the seven test questions,
     against nomic's 82nd to 374th. Passages containing the answer: **7/7**.
@@ -127,6 +134,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the new counter is floored at the old one so it can never keep *more* history
   than before. Tool calls are counted too: their content is often empty while
   the call itself is real tokens.
+
+- **A failed run showed an empty message instead of an error**
+  (`backend/app/add_langgraph_route.py`). `graph.astream` had no exception
+  handling, so when the embedding model hit `cudaMalloc out of memory` the tool
+  node raised, the graph aborted mid-stream, and the UI rendered an assistant
+  bubble with no content — indistinguishable from the model choosing to say
+  nothing. A failure is now appended to the stream, keeping any text already
+  emitted, and logged with a traceback. Covered by `tests/test_stream_errors.py`,
+  which caught a bug in the first version of the handler: `"".splitlines()[0]`
+  raises `IndexError` for an exception with an empty message — inside the
+  handler, so `TimeoutError()` and `ValueError()` would still have written
+  nothing.
+
+- **A GPU out-of-memory cost the whole answer**
+  (`backend/app/tools/document_search.py`, `documents/retrieval.py`).
+  `search_document` now degrades to lexical-only search when the question
+  cannot be embedded: BM25 needs no model on the GPU, and on the questions that
+  motivated it lexical search alone ranked the answering chunk 1st. Indexing
+  failures are likewise non-fatal when the document was indexed on an earlier
+  run. Verified against the 6 238-chunk document with the exact production error
+  injected — 22 829 characters of passages returned where it previously raised.
 
 - **A document could be embedded twice, concurrently**
   (`backend/app/documents/indexing.py`). Uploading fires an index request while
