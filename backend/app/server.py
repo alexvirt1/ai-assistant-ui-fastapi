@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from .add_langgraph_route import add_langgraph_route
+from .documents import store as document_store
+from .documents.routes import router as documents_router
 from .langgraph.agent import build_graph
 from .tools.mcp.loader import connect_mcp_servers
 
@@ -32,6 +34,10 @@ async def lifespan(app: FastAPI):
     else:
         graph = build_graph()
 
+    # Document tables, alongside the checkpointer's. A no-op without
+    # DATABASE_URL, so startup degrades rather than failing.
+    await document_store.setup()
+
     add_langgraph_route(app, graph, "/api/chat")
 
     try:
@@ -50,6 +56,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Registered at import rather than in the lifespan: unlike /api/chat, these
+# routes do not depend on the graph.
+app.include_router(documents_router)
 
 if __name__ == "__main__":
     import uvicorn

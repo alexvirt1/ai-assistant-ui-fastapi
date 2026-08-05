@@ -1,3 +1,4 @@
+import logging
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
 
@@ -13,6 +14,10 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from pydantic import BaseModel
+
+from .langgraph.agent import render_document_block
+
+logger = logging.getLogger(__name__)
 
 
 class LanguageModelTextPart(BaseModel):
@@ -142,11 +147,21 @@ class FrontendToolCall(BaseModel):
     parameters: dict[str, Any]
 
 
+class AttachedDocument(BaseModel):
+    id: str
+    name: Optional[str] = None
+    sections: Optional[int] = None
+
+
 class ChatRequest(BaseModel):
     id: Optional[str] = None
     threadId: Optional[str] = None
     system: Optional[str] = ""
     tools: Optional[List[FrontendToolCall]] = []
+    # Sent on every turn, not just the one carrying the attachment: the
+    # reference has to reach the system prompt, because a reference living in
+    # the conversation is trimmed away as the thread grows.
+    documents: Optional[List[AttachedDocument]] = []
     messages: List[LanguageModelV1Message]
 
 
@@ -205,52 +220,73 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 controller.append_text(text)
                 emitted_text += text
 
-            async for msg, metadata in graph.astream(
-                {"messages": inputs},
-                {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "system": request.system,
-                        "frontend_tools": request.tools,
-                    }
-                },
-                stream_mode="messages",
-            ):
-                if isinstance(msg, ToolMessage):
-                    tool_controller = tool_calls.get(msg.tool_call_id)
-                    if tool_controller is not None:
-                        tool_controller.set_result(str(msg.content))
-                    continue
+            document_block = render_document_block(
+                [d.model_dump() for d in (request.documents or [])]
+            )
 
-                if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
-                    append_deduped_text(content_to_text(msg.content))
+            try:
+                async for msg, metadata in graph.astream(
+                    {"messages": inputs, "documents": document_block},
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "system": request.system,
+                            "frontend_tools": request.tools,
+                        }
+                    },
+                    stream_mode="messages",
+                ):
+                    if isinstance(msg, ToolMessage):
+                        tool_controller = tool_calls.get(msg.tool_call_id)
+                        if tool_controller is not None:
+                            tool_controller.set_result(str(msg.content))
+                        continue
 
-                    for chunk in getattr(msg, "tool_call_chunks", []) or []:
-                        idx = chunk.get("index")
-                        call_id = chunk.get("id")
-                        name = chunk.get("name")
-                        args = chunk.get("args") or ""
+                    if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
+                        append_deduped_text(content_to_text(msg.content))
 
-                        if not call_id or not name:
-                            continue
+                        for chunk in getattr(msg, "tool_call_chunks", []) or []:
+                            idx = chunk.get("index")
+                            call_id = chunk.get("id")
+                            name = chunk.get("name")
+                            args = chunk.get("args") or ""
 
-                        # Providers that stream tool calls incrementally (OpenAI)
-                        # key the accumulation by index; Ollama delivers each call
-                        # complete in one chunk with index None, so fall back to
-                        # the call id.
-                        key = call_id if idx is None else idx
+                            if not call_id or not name:
+                                continue
 
-                        if key not in tool_calls_by_idx:
-                            tool_controller = await controller.add_tool_call(
-                                name, call_id
-                            )
-                            tool_calls_by_idx[key] = tool_controller
-                            tool_calls[call_id] = tool_controller
-                        else:
-                            tool_controller = tool_calls_by_idx[key]
+                            # Providers that stream tool calls incrementally (OpenAI)
+                            # key the accumulation by index; Ollama delivers each call
+                            # complete in one chunk with index None, so fall back to
+                            # the call id.
+                            key = call_id if idx is None else idx
 
-                        if args:
-                            tool_controller.append_args_text(str(args))
+                            if key not in tool_calls_by_idx:
+                                tool_controller = await controller.add_tool_call(
+                                    name, call_id
+                                )
+                                tool_calls_by_idx[key] = tool_controller
+                                tool_calls[call_id] = tool_controller
+                            else:
+                                tool_controller = tool_calls_by_idx[key]
+
+                            if args:
+                                tool_controller.append_args_text(str(args))
+            except Exception as exc:
+                # Without this the run dies mid-stream and the user gets an
+                # assistant message with no content at all - a blank bubble with
+                # no hint that anything went wrong. Seen live when the embedding
+                # model hit cudaMalloc out of memory: the tool node raised, the
+                # graph aborted, and the UI simply showed nothing.
+                logger.exception("chat run failed")
+                # Not str(exc).splitlines()[0] - an exception with an empty
+                # message ("".splitlines() == []) would raise IndexError here,
+                # inside the handler, and write nothing at all. TimeoutError()
+                # and ValueError() both do that.
+                message = str(exc).strip()
+                reason = message.splitlines()[0][:200] if message else type(exc).__name__
+                controller.append_text(
+                    f"\n\n_Something went wrong while answering: {reason}_"
+                )
 
         return DataStreamResponse(create_run(run))
 

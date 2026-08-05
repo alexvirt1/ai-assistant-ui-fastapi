@@ -28,5 +28,18 @@
   description: Image understanding.
 
 - role: embed
-  tag: nomic-embed-text:latest
-  description: Embeddings, for retrieval work later.
+  tag: qwen3-embedding:0.6b
+  description: >
+    Embeddings for retrieval. Multilingual, which nomic-embed-text is not: on
+    the Russian text of War and Peace nomic landed 1 of 6 answering chunks in
+    the top 5, against 5 of 6 here and 6 of 6 within top-12, which is the
+    top_k retrieval actually uses.
+
+    Chosen over bge-m3, which scores marginally better (6 of 6 in top-5) but
+    cannot run here: loading it needs ~5 GB transient despite settling at
+    1.3 GB, and with qwen3:8b resident at num_ctx=32768 (8.16 GB of an 11.75 GB
+    card) it dies with cudaMalloc out of memory. Measured alongside the 32k chat
+    model: qwen3-embedding 10.33 GB total and works, bge-m3 OOMs, and bge-m3
+    only fits if OLLAMA_NUM_CTX drops to 16384 or OLLAMA_MAX_LOADED_MODELS=1
+    forces a model swap on every question. Prefer bge-m3 only if you take one
+    of those trades.

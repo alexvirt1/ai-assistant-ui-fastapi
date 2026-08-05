@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
+from app.documents.chunker import count_message_tokens
 from app.langgraph import agent
 from app.langgraph.agent import HISTORY_MAX_TOKENS, make_prompt
 
@@ -41,12 +42,22 @@ def build_history(turns: int = 40) -> list:
     return messages
 
 
-def test_history_is_actually_trimmed():
+def test_history_is_actually_trimmed(monkeypatch):
+    """Pins its own budget rather than reading the deployed one.
+
+    This previously asserted against the ambient HISTORY_MAX_TOKENS, which comes
+    from .env — so raising the deployed budget failed the test even though the
+    trimming code was fine. A unit test should not depend on deployment config.
+    """
+    budget = 2000
+    monkeypatch.setattr(agent, "HISTORY_MAX_TOKENS", budget)
+
     history = build_history()
-    assert count_tokens_approximately(history) > HISTORY_MAX_TOKENS
+    assert count_tokens_approximately(history) > budget, "fixture must exceed the budget"
+
     out = make_prompt(SYSTEM)({"messages": history})
     assert len(out) < len(history)
-    assert count_tokens_approximately(out[1:]) <= HISTORY_MAX_TOKENS
+    assert count_tokens_approximately(out[1:]) <= budget
 
 
 def test_system_prompt_survives_and_leads():
@@ -127,3 +138,169 @@ def test_short_history_is_left_alone():
     history = [HumanMessage("hello"), AIMessage("hi")]
     out = make_prompt(SYSTEM)({"messages": history})
     assert out[1:] == history
+
+
+class TestAttachedDocuments:
+    """A document reference must outlive the conversation that introduced it.
+
+    Sent as a chat message it sits in the oldest turn, which is exactly what the
+    trimmer discards first: measured at 121 messages the reference was gone and
+    the agent could no longer reach a document it had been given.
+    """
+
+    BLOCK = 'Documents attached to this conversation:\n- id=abc-123 name="big.txt"'
+
+    def test_absent_when_no_document_is_attached(self):
+        out = make_prompt(SYSTEM)({"messages": [HumanMessage("hi")]})
+        assert out[0].content == SYSTEM
+
+    def test_appended_to_the_system_prompt(self):
+        out = make_prompt(SYSTEM)(
+            {"messages": [HumanMessage("hi")], "documents": self.BLOCK}
+        )
+        assert SYSTEM in out[0].content
+        assert "abc-123" in out[0].content
+
+    def test_survives_a_thread_long_enough_to_trim_everything(self, monkeypatch):
+        """Pins its own budget, for the reason the sibling test above documents.
+
+        This read the deployed HISTORY_MAX_TOKENS, so raising it in .env made the
+        fixture stop exceeding the budget: nothing was trimmed, and a test about
+        surviving trimming passed nothing to trim. Failed the day the budget went
+        from 12000 to 20000, with the trimming code untouched.
+        """
+        monkeypatch.setattr(agent, "HISTORY_MAX_TOKENS", 2000)
+
+        messages = [HumanMessage("<attached-document id='abc'>ref</attached-document>")]
+        for i in range(60):
+            messages.append(HumanMessage(f"q{i} " + "word " * 120))
+            messages.append(AIMessage(f"a{i} " + "word " * 120))
+
+        out = make_prompt(SYSTEM)({"messages": messages, "documents": self.BLOCK})
+
+        assert not any("attached-document" in str(m.content) for m in out[1:]), (
+            "the in-conversation reference should have been trimmed away"
+        )
+        assert "abc-123" in out[0].content, "but the pinned one must survive"
+
+    def test_empty_block_is_treated_as_absent(self):
+        out = make_prompt(SYSTEM)({"messages": [HumanMessage("hi")], "documents": ""})
+        assert out[0].content == SYSTEM
+
+
+def test_render_document_block_is_empty_without_documents():
+    assert agent.render_document_block([]) == ""
+
+
+def test_render_document_block_lists_each_document():
+    block = agent.render_document_block([
+        {"id": "a1", "name": "one.txt", "sections": 5},
+        {"id": "b2", "name": "two.txt", "sections": 9},
+    ])
+    assert "a1" in block and "b2" in block
+    assert "search_document" in block
+    # The model previously replied "please provide the document ID" while
+    # holding it; the instruction says not to. Asserted on intent rather than
+    # exact wording, which is prose and gets edited.
+    assert "its id" in block
+    # Load-bearing since the agent was measured answering a follow-up from
+    # web_search instead of searching the attached document again.
+    assert "web_search" in block
+    assert "follow-up" in block
+
+
+class TestStaleToolResults:
+    """Passages from an answered question must not linger in the context.
+
+    A document search returns ~11 000 tokens. Measured with one in the history,
+    the agent stopped calling search_document for the next question: it answered
+    from those stale passages, reached for web_search instead, and on one run
+    cited a section number that appeared nowhere in them.
+    """
+
+    DOC = "abc-123"
+
+    def conversation(self, follow_up="С кем встретился Наполеон?"):
+        return [
+            HumanMessage("Кто был на именинах?"),
+            AIMessage("", tool_calls=[{"name": "search_document",
+                                       "args": {"document_id": self.DOC, "question": "именины"},
+                                       "id": "c1", "type": "tool_call"}]),
+            ToolMessage(content="[Section 148]\n" + "passage text " * 500, tool_call_id="c1"),
+            AIMessage("Гости [Section 148]."),
+            HumanMessage(follow_up),
+        ]
+
+    def test_an_earlier_tool_result_is_retired(self):
+        out = agent._retire_stale_tool_results(self.conversation())
+        assert out[2].content == agent.STALE_TOOL_RESULT
+
+    def test_it_says_to_search_again(self):
+        # The placeholder has to be an instruction, not just an absence.
+        assert "search_document" in agent.STALE_TOOL_RESULT
+
+    def test_the_tool_message_survives_so_its_call_is_not_orphaned(self):
+        # Deleting it would leave an AIMessage tool call with no result, which
+        # providers reject outright.
+        out = agent._retire_stale_tool_results(self.conversation())
+        assert isinstance(out[2], ToolMessage)
+        assert out[2].tool_call_id == "c1"
+
+    def test_the_current_turn_keeps_its_passages(self):
+        # Mid-ReAct-loop the freshly retrieved passages are the whole point.
+        history = self.conversation() + [
+            AIMessage("", tool_calls=[{"name": "search_document",
+                                       "args": {"document_id": self.DOC, "question": "Наполеон"},
+                                       "id": "c2", "type": "tool_call"}]),
+            ToolMessage(content="[Section 1400]\nНаполеон...", tool_call_id="c2"),
+        ]
+        out = agent._retire_stale_tool_results(history)
+        assert "Наполеон" in out[-1].content
+
+    def test_it_frees_the_context(self):
+        history = self.conversation()
+        before = count_message_tokens(history)
+        after = count_message_tokens(agent._retire_stale_tool_results(history))
+        assert after < before / 5
+
+    def test_a_single_turn_is_untouched(self):
+        history = [HumanMessage("Кто был на именинах?")]
+        assert agent._retire_stale_tool_results(history) == history
+
+    def test_a_conversation_with_no_tool_results_is_untouched(self):
+        history = [HumanMessage("hi"), AIMessage("hello"), HumanMessage("again")]
+        assert agent._retire_stale_tool_results(history) == history
+
+    def test_applying_it_twice_changes_nothing_further(self):
+        once = agent._retire_stale_tool_results(self.conversation())
+        twice = agent._retire_stale_tool_results(once)
+        assert [m.content for m in once] == [m.content for m in twice]
+
+    def test_the_prompt_callable_applies_it(self):
+        out = make_prompt(SYSTEM)({"messages": self.conversation()})
+        retired = [m for m in out if isinstance(m, ToolMessage)
+                   and m.content == agent.STALE_TOOL_RESULT]
+        assert retired, "stale passages reached the model"
+
+    def test_it_leaves_no_orphans(self):
+        assert_no_orphans(make_prompt(SYSTEM)({"messages": self.conversation()})[1:])
+
+
+def test_the_tool_hint_describes_the_block_the_model_actually_sees():
+    """REGRESSION: the hint told the model to look for an "<attached-document>"
+    reference. That format stopped being used when references moved to the
+    system prompt, so the trigger it named appeared nowhere and the model was
+    left to infer that search_document applied - measured going to web_search
+    for a document question instead.
+    """
+    from app.tools import get_enabled_specs
+
+    spec = next((s for s in get_enabled_specs() if s.tool.name == "search_document"), None)
+    if spec is None:
+        pytest.skip("search_document is disabled without DATABASE_URL")
+
+    block = agent.render_document_block([{"id": "a1", "name": "one.txt", "sections": 5}])
+    assert "attached-document" not in spec.prompt_hint, "names a format nothing emits"
+    # Both sides must point at the same thing.
+    assert "attached document" in spec.prompt_hint.lower()
+    assert "search_document" in spec.prompt_hint and "search_document" in block

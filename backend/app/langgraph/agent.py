@@ -8,9 +8,10 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
-from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt.chat_agent_executor import AgentState
 
+from ..documents.chunker import count_message_tokens
 from ..models import DEFAULT_ROLE, make_chat_model
 from ..tools import compose_prompt, get_enabled_specs
 
@@ -37,9 +38,98 @@ BASE_PROMPT = (
 )
 
 # Token budget for conversation history handed to the model, excluding the
-# system prompt and the tool schemas. Keep it well under OLLAMA_NUM_CTX so
-# there is room for both of those plus the response.
-HISTORY_MAX_TOKENS = int(os.getenv("HISTORY_MAX_TOKENS", "3000"))
+# system prompt and the tool schemas. Kept well under OLLAMA_NUM_CTX so there is
+# room for both of those plus the response.
+#
+# The default is derived from the context window rather than fixed, because the
+# two have to move together: raising OLLAMA_NUM_CTX alone leaves the extra
+# window unused, and raising this alone overflows it. A third of the window
+# matches the ratio this ran at before (3000 of 8192).
+HISTORY_MAX_TOKENS = int(
+    os.getenv("HISTORY_MAX_TOKENS")
+    or int(os.getenv("OLLAMA_NUM_CTX", "8192")) // 3
+)
+
+
+class DocumentAwareState(AgentState, total=False):
+    """Agent state plus a block describing any attached documents.
+
+    Carried in state rather than in the conversation because the conversation
+    is trimmed. An attached-document reference sent as a chat message sits in
+    the *oldest* turn, which is exactly what HISTORY_MAX_TOKENS discards first -
+    measured at 121 messages, the reference was gone and the agent could no
+    longer reach a document it had been given. Pinned to the system prompt it
+    survives any thread length.
+    """
+
+    documents: str
+
+
+def render_document_block(documents: list[dict]) -> str:
+    """The reminder appended to the system prompt, or empty if none."""
+    if not documents:
+        return ""
+    lines = [
+        f'- id={d.get("id")} name="{d.get("name", "?")}" '
+        f'sections={d.get("sections", "?")}'
+        for d in documents
+    ]
+    return (
+        "Documents attached to this conversation:\n"
+        + "\n".join(lines)
+        + "\n\nTheir text is NOT in this conversation. Call search_document with "
+        "the matching id to answer ANY question about them, including follow-up "
+        "questions - passages already in the conversation were retrieved for an "
+        "earlier question and will not answer a new one. Measured: with a large "
+        "set of passages from a previous question filling the context, the model "
+        "reached for web_search instead and answered from the internet. Never "
+        "use web_search or fetch_page for a question about an attached document, "
+        "and never tell the user you lack the document or ask for its id - it is "
+        "listed above."
+    )
+
+
+STALE_TOOL_RESULT = (
+    "[Passages from an earlier question in this conversation. They have been "
+    "removed because they were retrieved for that question, not this one. "
+    "Call search_document again to answer the current question.]"
+)
+
+
+def _retire_stale_tool_results(messages: list) -> list:
+    """Blank tool results from turns before the current one.
+
+    A document search returns ~11 000 tokens of passages. Left in the history
+    they are both the largest thing in the context and stale by construction -
+    chosen to answer a question that has already been answered. Measured with
+    one such result in the history, the agent stopped calling search_document
+    for the next question: it answered from those passages, reached for
+    web_search instead, and on one run invented a section number that appeared
+    nowhere in them.
+
+    The message itself is kept and only its content replaced. Dropping it would
+    orphan the AIMessage tool call that produced it, which providers reject.
+
+    Only results from *earlier* turns are retired; everything from the current
+    human turn onward is what the model is working with right now.
+    """
+    last_human = -1
+    for i, message in enumerate(messages):
+        if isinstance(message, HumanMessage):
+            last_human = i
+    if last_human <= 0:
+        return messages
+
+    out = list(messages)
+    for i in range(last_human):
+        message = out[i]
+        if isinstance(message, ToolMessage) and message.content != STALE_TOOL_RESULT:
+            out[i] = ToolMessage(
+                content=STALE_TOOL_RESULT,
+                tool_call_id=message.tool_call_id,
+                name=getattr(message, "name", None),
+            )
+    return out
 
 
 def _minimal_tail(messages: list) -> list:
@@ -91,10 +181,23 @@ def make_prompt(system_prompt: str):
 
     def prompt(state) -> list:
         messages = state["messages"]
+        # Appended per call, so an attached document stays reachable however
+        # long the thread grows.
+        attached = state.get("documents") if hasattr(state, "get") else None
+        active_system = (
+            SystemMessage(f"{system_prompt}\n\n{attached}") if attached else system
+        )
+        # Before trimming, not after: retiring these frees the single largest
+        # block in the context, so the budget goes to actual conversation.
+        messages = _retire_stale_tool_results(messages)
         trimmed = trim_messages(
             messages,
             max_tokens=HISTORY_MAX_TOKENS,
-            token_counter=count_tokens_approximately,
+            # Script-aware, unlike count_tokens_approximately: on Russian that
+            # one undercounts by ~1.94x, so the trimmer kept nearly double its
+            # budget and could overflow the real context window. Identical on
+            # ASCII, so English threads trim exactly as before.
+            token_counter=count_message_tokens,
             strategy="last",
             # Never begin on an orphaned ToolMessage: a tool result whose
             # calling AIMessage was trimmed away is rejected by the provider.
@@ -108,7 +211,7 @@ def make_prompt(system_prompt: str):
         # only a system prompt would lose the user's question entirely.
         if not trimmed:
             trimmed = _minimal_tail(messages)
-        return [system] + list(trimmed)
+        return [active_system] + list(trimmed)
 
     return prompt
 
@@ -119,5 +222,6 @@ def build_graph(checkpointer=None):
         model=make_model(),
         tools=[spec.tool for spec in specs],
         prompt=make_prompt(compose_prompt(BASE_PROMPT, specs)),
+        state_schema=DocumentAwareState,
         checkpointer=checkpointer,
     )
