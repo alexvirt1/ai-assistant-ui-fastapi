@@ -72,8 +72,8 @@ Copy `.env.example` to `.env`. The model and server variables:
 | --- | --- |
 | `OLLAMA_MODEL` | Model name (default `qwen3:8b`). |
 | `OLLAMA_BASE_URL` | Ollama endpoint. |
-| `OLLAMA_NUM_CTX` | Context window passed to the model (default `8192`). |
-| `HISTORY_MAX_TOKENS` | Token budget for conversation history sent to the model (default `3000`). |
+| `OLLAMA_NUM_CTX` | Context window passed to the model (default `32768`). |
+| `HISTORY_MAX_TOKENS` | Token budget for conversation history (defaults to a third of `OLLAMA_NUM_CTX`, so the two scale together). |
 | `OLLAMA_KEEP_ALIVE` | How long the VM holds a model in memory (default `30m`). |
 | `MODELS_CONFIG` | Path to the model-roles YAML (default `backend/models.yaml`). |
 | `DATABASE_URL` | When set, enables per-thread conversation persistence. |
@@ -107,6 +107,166 @@ poetry run python -m app.models
 cold load costs roughly 6s for an 8B and 19s for a 14B against 0.3s once warm.
 Group work by model rather than alternating; `OLLAMA_KEEP_ALIVE` (default `30m`,
 against Ollama's own 5m) stops an idle conversation re-paying that load.
+
+### Large documents
+
+`app/documents/` is phase 1 of the map-reduce pipeline: everything needed to
+accept a large file and say what processing it would cost, **without any model
+calls**.
+
+```bash
+curl -F "file=@handbook.txt" http://127.0.0.1:8000/api/documents
+```
+
+```json
+{"id": "…", "reused": false,
+ "scope": {"tokens": 1310720, "chunks": 87, "estimated_minutes": 78.3,
+           "tier": "consider_retrieval",
+           "message": "87 chunks, about 78 minutes. If you want to ask targeted
+                       questions rather than summarise the whole document,
+                       retrieval answers in seconds instead."}}
+```
+
+A large document deliberately does **not** travel through the chat message:
+inlined text is persisted into the LangGraph checkpoint and re-sent on every
+later turn, so a 5 MB attachment would poison the thread permanently. It is
+stored in `documents` / `document_chunks` and the conversation carries only a
+reference.
+
+- **Chunking** (`chunker.py`) is token-aware, prefers paragraph boundaries, and
+  overlaps consecutive chunks so a fact spanning a boundary is not lost to both
+  neighbours. No chunk may exceed the budget — that invariant is what the tests
+  guard hardest.
+- **Sizing** (`scope.py`) is arithmetic, so a 5 MB file is sized in
+  milliseconds. Tiers: `single_pass` (fits one window — skip the pipeline
+  entirely), `quick`, `confirm` (warn first), `consider_retrieval`. Throughput
+  constants default to this deployment's measured figures (317 tok/s prompt,
+  57 tok/s generation) and are env-overridable.
+- **Storage** (`store.py`) deduplicates by SHA-256, so re-uploading the same
+  file reuses its chunks — and, once phase 2 lands, the per-chunk summaries that
+  cost 80 minutes to produce.
+
+Requires `DATABASE_URL`; without it the tables are not created and uploads
+return 503, matching how conversation persistence already degrades.
+
+**The map step** (`mapper.py`) summarises chunks one at a time into a structured
+record — `topic`, `findings`, `entities`, `uncertain` — because merging 87
+freeform paragraphs produces mush while merging 87 aligned records produces a
+document map.
+
+- **Sequential by design.** Independent chunks look like an obvious parallel
+  fan-out, but the VM serves one model on one GPU, so concurrent calls would
+  queue at Ollama for no gain while complicating progress and cancellation.
+- **Three attempts, decreasing strictness**: structured, structured with an
+  explicit JSON reminder, then unvalidated prose flagged `degraded`. Over 87
+  chunks a small model will fail a schema occasionally, and the job must not die
+  on chunk 61.
+- **Cached per chunk**, keyed by `(document_id, idx, model, prompt_version)` and
+  written as each chunk completes. Measured: a re-run is **106x faster** and
+  entirely cache-served, and bumping `PROMPT_VERSION` invalidates cleanly rather
+  than serving summaries produced by older wording.
+- **Model access is injected**, so validation, repair, degradation, caching and
+  cancellation are all tested without a VM. `callers.py` holds the only code
+  that talks to Ollama, using the `fast` role so a whole job stays on one model
+  and pays no swap cost.
+
+The per-chunk instruction spells out each field explicitly rather than relying
+on the schema's descriptions. Tested against qwen3:8b, descriptions alone
+returned an empty `entities` list for text naming five people and companies, and
+a `topic` that echoed the document title instead of the section's own subject.
+
+**The reduce step** (`reducer.py`, `reduce.py`) combines chunk summaries into a
+`DocumentSummary` — `overview`, `key_findings`, `outline`, `entities`, `gaps`.
+
+The design decision worth knowing: **the model is asked to do as little as
+possible**. Entities, the outline and the gap report are merged
+deterministically in code; the model writes only the prose that needs judgement.
+Asked to merge 87 entity lists a model silently drops some, and under
+hierarchical reduce that loss compounds at every level. Computed in code, a name
+appearing once in chunk 3 reaches the final summary however many levels it
+passes through — a property the tests assert directly.
+
+Reduce runs on the `deep` role (qwen2.5:14b), worth one model swap for the
+output a person actually reads, and recurses only when summaries overflow one
+window — 87 chunks at ~300 tokens fit a single pass, so the recursion exists for
+documents several times larger.
+
+Two failure modes are handled explicitly. A malformed reduce response stitches
+the inputs together rather than discarding an hour of map work. And the reduce
+prompt insists that every number, threshold and identifier be carried through:
+without that instruction, qwen2.5:14b dropped a calibration constant that the
+map step had correctly captured, producing a shorter, better-reading summary
+that had lost the single most important value in the document.
+
+**Running a summary** is a detached job — a 78-minute pipeline cannot be an HTTP
+request:
+
+```bash
+# start; returns immediately with a job id
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/summarize
+
+# poll (cheap enough every second)
+curl http://127.0.0.1:8000/api/documents/jobs/$JOB
+# {"status":"running","phase":"map","completed":12,"total":87,
+#  "fraction":0.138,"eta_seconds":3900,"description":"map: 12/87, ~65 min remaining"}
+
+# stop it; already-computed chunk summaries are kept
+curl -X POST http://127.0.0.1:8000/api/documents/jobs/$JOB/cancel
+```
+
+- A **completed summary is served from `document_summaries`**, so asking twice
+  costs nothing. `?force=true` re-runs it.
+- Starting a second job for the same document **returns the running one**: two
+  concurrent jobs would compete for the same single-model VM and double the
+  wait for nothing.
+- The **ETA comes from the observed rate**, not the pre-flight estimate — after
+  a few chunks the measured rate accounts for cache hits and this document's
+  actual content.
+- **Job state is in-memory by design.** The expensive artefacts live in
+  Postgres, so a restart loses the tracking but not the work: restarting a job
+  replays it from cache in seconds. Persisting job rows would add schema and
+  lifecycle for very little gain.
+
+### Retrieval
+
+Summarising and question-answering are different jobs, and the pipeline treats
+them that way:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/index    # ~1 min for 5 MB
+curl -X POST http://127.0.0.1:8000/api/documents/$ID/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What is the reactor calibration constant?"}'
+# -> "The reactor calibration constant is 8.472 kelvin-seconds."  (~10s)
+```
+
+Measured on the same 5 MB document: **59s to index, ~10s per question**, against
+**43 minutes** for a full map-reduce pass — and retrieval answered two questions
+that map-reduce could not, because a summary compresses ~130:1 and isolated
+facts do not survive that.
+
+**Retrieval re-chunks the document at its own granularity** (~400 tokens, versus
+16 000 for summarising) rather than reusing the summarisation chunks. This is
+the part that decides whether retrieval works at all:
+
+- A 64 KB chunk embeds to a vector dominated by whatever is most common in it,
+  so one sentence contributes almost nothing. With coarse chunks every score sat
+  between 0.44 and 0.50 — no discrimination. With fine chunks the correct chunk
+  scores 0.61 against 0.50 for the rest.
+- Truncating a coarse chunk to fit the embedding model is worse still. An
+  earlier version cut at 8 000 characters, and the two facts under test sat at
+  offsets 11 440 and 18 795 — they were never embedded at all.
+
+Vectors are stored as JSONB and cosine similarity is computed in Python:
+pgvector is not installed here and needs OS-level access, and at ~5 000 chunks
+of 768 dimensions the maths costs milliseconds. Past roughly 20 000 chunks in
+one corpus, numpy would be worth adding.
+
+**Each question costs ~9s of model swapping**, because the VM does not hold the
+embedding model and the chat model at once — embedding evicts qwen3:8b and
+answering loads it back. Setting `OLLAMA_MAX_LOADED_MODELS=2` on the Ollama
+service would remove that: the two are 0.6 GB and 6 GB against an 11.75 GB
+ceiling.
 
 ### History trimming
 

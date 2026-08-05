@@ -7,6 +7,455 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Large files now reach the chat UI** (phase A of the attachment work). The
+  attachment adapter routes by size: files that fit the context window are
+  inlined as before, larger ones go to `/api/documents` and the model receives a
+  reference instead of the text. A new `search_document` tool
+  (`backend/app/tools/document_search.py`) retrieves the relevant passages —
+  indexing lazily on first use — and the agent writes the answer itself, so a
+  5 MB attachment becomes a 509-byte request. Verified live: the agent called
+  the tool unprompted and answered correctly in 4.5s.
+  - A Next proxy at `app/api/documents/[[...path]]` keeps the backend address
+    server-side. The **optional** catch-all matters: `[...path]` does not match
+    `/api/documents` itself, and Next then treats the multipart upload as a
+    Server Action and returns "Server action not found".
+  - If the upload fails the adapter degrades to a truncated inline copy with an
+    explanatory note, rather than dropping the attachment.
+  - **Document references are pinned to the system prompt**, not left in the
+    conversation. Testing showed why: on turn 3 the model replied "please
+    provide the document ID" while holding it, and at 121 messages the history
+    trimmer had discarded the reference entirely, making the document
+    permanently unreachable. The frontend now sends attached documents on every
+    request (`lib/documentStore.ts`), the chat route accepts them, and
+    `DocumentAwareState` carries them into the prompt callable, which appends
+    them to the system prompt — the one part never trimmed. The previously
+    failing turn-3 case now calls the tool and answers correctly.
+  - "New chat" clears attached documents, so they are not announced in the next
+    conversation's system prompt.
+  - **Attached documents are now visible** (`components/attachments/DocumentChips.tsx`).
+    Testing a 5 MB file exposed the gap: the text is never displayed, the
+    reference goes only to the model, and embedding runs for about a minute in
+    the background, so the only sign anything had happened was the
+    `search_document` tool firing on the next question. A chip per document now
+    shows `name · N sections · preparing… → ready`, reading the same store the
+    runtime sends to the backend so it cannot disagree with what the model was
+    told is attached. `startIndexing()` returns its outcome instead of
+    discarding it, which is what drives the transition. A failed background
+    index reads as a delay rather than an error, because `search_document`
+    indexes on demand anyway. The scope estimate stays in the tooltip: it is
+    the cost of *summarising*, and showing "about 45 minutes" inline would
+    imply the next question takes that long.
+
+- **Hybrid retrieval: BM25 fused with the vector search**
+  (`backend/app/documents/lexical.py`, `retrieval.py`). Testing the complete
+  text of *War and Peace* produced a confident, largely fabricated answer, and
+  the cause was that the model never received the right passages. Measured on
+  the 2 669-chunk index, the vector channel ranked the correct chunk **168th**
+  for "Что произошло с Платоном Каратаевым?" and **374th** for "Кто такая
+  Марья Дмитриевна Ахросимова?" — with `top_k=5`. BM25 puts both at **rank 1**.
+  `nomic-embed-text` is English-only and its Russian vectors collapse into a
+  narrow cone: median cosine 0.80 against 0.48 for the same pipeline on English,
+  so rare proper nouns — exactly what these questions turn on — cannot win.
+  - Fused by **reciprocal rank**, not score: cosine sat between 0.80 and 0.88
+    while BM25 ran 0 to 30, and the cosine spread was too narrow to weight.
+  - **Candidates are capped per channel**, which is what makes fusion work
+    rather than merely average. Fusing full rankings measured *worse* than
+    lexical search alone, because deep vector ranks lifted mediocre hits above
+    good ones: capped at 50, Ахросимова goes 374 → 1 and Каратаев 168 → 4.
+  - Retrieved chunks are expanded to their **neighbours**, since a scene runs
+    across consecutive chunks, and the context is assembled **matches first,
+    then neighbours** so a good match is never displaced by context around a
+    better one.
+  - `top_k` 5 → 12, and the context budget is now denominated in **tokens, not
+    characters** — 12 000 characters is ~3 000 tokens of English but ~5 700 of
+    Russian, so one cap admitted twice as much of one language as the other.
+  - End to end on six Russian questions, passages containing the answer went
+    from **0/6 to 5/6**. The English document that already worked still returns
+    its planted facts. Verified live.
+
+- **Citations you can open** (`frontend/lib/remarkSections.ts`,
+  `components/attachments/SectionCitation.tsx`, plus
+  `GET /api/documents/{id}/sections/{n}`). Answers cite `[Section 148]`, but a
+  citation nobody can check is only a claim about a claim — and this is exactly
+  where the model is least reliable: on *War and Peace* it cited real sections
+  while merging two different scenes into one answer, which is invisible unless
+  you can read the passage. A remark plugin rewrites citations into links with a
+  `section:` URL and the `a` component renders them as buttons that fetch the
+  passage on demand — an answer can cite a dozen sections and most are never
+  opened. With no document attached, or more than one, a citation stays plain
+  text: the model does not say *which* document it cited, and showing a passage
+  from the wrong one is worse than showing none.
+  - The href is `#section-148`, not a `section:` protocol. react-markdown runs
+    every URL through `defaultUrlTransform`, which permits only http, https,
+    irc, mailto and xmpp and rewrites anything else to the empty string — so the
+    first version reached the renderer with `href=""` and every citation fell
+    back to plain text. All the unit tests passed, because none of them went
+    through react-markdown. A regression test now asserts that every href the
+    plugin emits survives that sanitiser.
+  - Attached documents now survive a page reload
+    (`frontend/lib/documentStore.ts`). The store was memory-only while the
+    conversation lives in Postgres, so after a refresh the thread still showed
+    an answer citing `[Section 148]` with nothing left to resolve it against —
+    the citation fell back to a dead link. Worse, the backend also stopped being
+    told a document was attached, losing the pinned system-prompt block that
+    makes it searchable at all. Persisted to localStorage keyed by thread id, so
+    a different conversation never inherits them, and hydrated from an effect
+    rather than at import so the first client render still matches the
+    server-rendered HTML.
+
+- **The model must quote what it claims**
+  (`backend/app/tools/document_search.py`). A section number can be attached to
+  an invented fact; a verbatim quote cannot, because the quote either appears in
+  the passages or it does not. The tool now requires a section number *and* a
+  supporting quote per fact, and explicitly warns that the passages come from
+  different places in the document and may describe different occasions — the
+  failure that put Денисов and Долохов, who belong to the 1806 Moscow visit, at
+  an 1805 name-day. The effect is a sparser but honest answer: on the question
+  that once produced twelve confidently wrong names, it now states one fact with
+  the sentence that supports it.
+  - A 14B answering model was measured and rejected: `qwen2.5:14b` at
+    `num_ctx=32768` takes the entire 11.75 GB card, so loading the embedder
+    evicts it and every question pays a ~19s cold reload.
+
+### Changed
+
+- **Embedding model: `nomic-embed-text` → `qwen3-embedding:0.6b`**
+  (`backend/models.yaml`).
+  The `embed` role was already registry-driven, so this is configuration, not
+  code. nomic-embed-text is English-only, and on Russian it was not merely
+  weaker but close to useless. A/B on 826 chunks of *War and Peace*, six
+  questions, measuring where the answering chunk lands:
+
+  | model | gold in top-5 | gold in top-12 | separation | VRAM |
+  |---|---|---|---|---|
+  | nomic-embed-text | 1/6 | 3/6 | 0.07 | 0.3 GB |
+  | qwen3-embedding:0.6b | 5/6 | 6/6 | 0.24 | 2.2 GB |
+  | **bge-m3** | **6/6** | **6/6** | **0.24** | **1.3 GB** |
+
+  bge-m3 ranks best on paper but **cannot run on this card**. Loading it needs
+  ~5 GB transient despite settling at 1.3 GB, and with qwen3:8b resident at
+  `num_ctx=32768` (8.16 GB of 11.75 GB) it dies with `cudaMalloc out of memory`.
+  Measured alongside the real 32k chat model: qwen3-embedding 10.33 GB and
+  works, bge-m3 OOMs, and bge-m3 fits only if `OLLAMA_NUM_CTX` drops to 16384 or
+  `OLLAMA_MAX_LOADED_MODELS=1` forces a swap on every question. Since retrieval
+  fuses with BM25 at `top_k=12`, where both score 6/6, the model that runs wins.
+  (bge-m3 was briefly configured on the strength of a benchmark taken without
+  production's `num_ctx`, which made the chat model look 2 GB smaller than it
+  is; it OOM'd in the UI within minutes.)
+  - On the full re-indexed document the vector channel now ranks the answering
+    chunk **1st, 1st, 2nd, 1st, 1st, 3rd and 1st** for the seven test questions,
+    against nomic's 82nd to 374th. Passages containing the answer: **7/7**.
+  - Re-chunking under the corrected token estimator took the document from
+    2 669 to **6 238 chunks** — the Russian chunks were ~770 tokens while
+    claiming to be 400, and are now genuinely ~400, which is finer granularity
+    as well as an honest budget.
+  - Storage keys by model name, so the switch re-indexed rather than silently
+    comparing 1024-dimension vectors against 768-dimension ones, and the old
+    rows are still there to A/B against. `EMBED_DIMENSIONS` is gone: it was
+    unused and asserted 768, which is now wrong.
+  - **The fabrications are gone.** The name-day question that invented a "Князь
+    Василий Болконский", a "Борис Ростов" and an "Анна Павловна" as countess
+    Rostova now names only real characters, correctly identified — Анна
+    Михайловна Друбецкая, граф Илья Андреевич Ростов, Соня — and cites the
+    sections it used. The list is still incomplete and still mixes in the 1806
+    Moscow visit, because retrieval draws its twelve best chunks from across the
+    whole novel (2.3% to 90.7% of it) with nothing marking which belong to the
+    same occasion. That is scene disambiguation, not retrieval quality.
+
+### Fixed
+
+- **Follow-up questions were answered from stale passages, or from the
+  internet** (`backend/app/langgraph/agent.py`,
+  `app/tools/document_search.py`). A second question about an attached document
+  produced "the passages provided do not mention Napoleon… would you like me to
+  search?" — the agent reasoned over passages retrieved for the *previous*
+  question instead of searching again. Two causes, both measured:
+  - The tool hint told the model to act "when the conversation contains an
+    `<attached-document>` reference". That format stopped being emitted when
+    references moved to the system prompt, so the trigger it named appeared
+    nowhere. Hint and block now describe the same thing, with a test asserting
+    they agree.
+  - A search returns ~11 000 tokens of passages, which then sat in the history
+    as both the largest thing in the context and stale by construction.
+    Reproduced with one in the history: the agent called `web_search` and
+    `fetch_page` instead of `search_document`, answered from the internet
+    (claiming Pierre met Napoleon, which never happens), and on another run
+    cited a section number appearing nowhere in the passages. Tool results from
+    earlier turns are now blanked to a placeholder telling the model to search
+    again — the message is kept and only its content replaced, so the calling
+    AIMessage is never orphaned. Context on the reproduction fell from **11 137
+    to 170 tokens**, and both failing questions now search and answer correctly
+    with quotes.
+
+- **The token estimator was 1.92x wrong on non-Latin text**
+  (`backend/app/documents/chunker.py`). It assumed 4 characters per token for
+  every script; measured against cl100k on 3.2 MB of Russian, the real figure is
+  2.08. Every budget denominated in these units inherited the error —
+  "400-token" retrieval chunks were really ~770 tokens, and the history trimmer
+  kept nearly double what it believed, which is a context overflow rather than a
+  rounding error. Now script-aware, and shared with the trimmer via
+  `count_message_tokens` so the two budgets cannot drift apart. ASCII text takes
+  the original path unchanged, so English behaviour is bit-for-bit identical, and
+  the new counter is floored at the old one so it can never keep *more* history
+  than before. Tool calls are counted too: their content is often empty while
+  the call itself is real tokens.
+
+- **A failed run showed an empty message instead of an error**
+  (`backend/app/add_langgraph_route.py`). `graph.astream` had no exception
+  handling, so when the embedding model hit `cudaMalloc out of memory` the tool
+  node raised, the graph aborted mid-stream, and the UI rendered an assistant
+  bubble with no content — indistinguishable from the model choosing to say
+  nothing. A failure is now appended to the stream, keeping any text already
+  emitted, and logged with a traceback. Covered by `tests/test_stream_errors.py`,
+  which caught a bug in the first version of the handler: `"".splitlines()[0]`
+  raises `IndexError` for an exception with an empty message — inside the
+  handler, so `TimeoutError()` and `ValueError()` would still have written
+  nothing.
+
+- **A GPU out-of-memory cost the whole answer**
+  (`backend/app/tools/document_search.py`, `documents/retrieval.py`).
+  `search_document` now degrades to lexical-only search when the question
+  cannot be embedded: BM25 needs no model on the GPU, and on the questions that
+  motivated it lexical search alone ranked the answering chunk 1st. Indexing
+  failures are likewise non-fatal when the document was indexed on an earlier
+  run. Verified against the 6 238-chunk document with the exact production error
+  injected — 22 829 characters of passages returned where it previously raised.
+
+- **A document could be embedded twice, concurrently**
+  (`backend/app/documents/indexing.py`). Uploading fires an index request while
+  `search_document` indexes lazily if it finds nothing, so asking a question a
+  few seconds after attaching — ordinary use — had both see an empty index and
+  both embed the whole document: ~60s of duplicated work per 5 MB on a machine
+  that runs one model at a time, with `save_retrieval_chunks` doing
+  DELETE-then-INSERT so the two passes could interleave. Both call sites now go
+  through one `ensure_indexed()` guarded by a per-document lock, which also
+  removes the duplicated indexing logic they each carried. Verified against the
+  live database on the 4 974-chunk document: three concurrent callers, a
+  booby-trapped embedder that raises if touched, and no re-embedding.
+
+- **Large-document pipeline, phase 5 — retrieval**
+  (`backend/app/documents/retrieval.py`, `embeddings.py`, plus `/index` and
+  `/ask`): question-answering over a document, as the counterpart to
+  summarising rather than a replacement.
+  - On the same 5 MB document: **59s to index, ~10s per question**, against
+    **43 minutes** for a map-reduce pass — and it answered two questions
+    map-reduce could not. "Emergency muster point Delta-9, capacity 412" was
+    lost by *both* summarisation runs; retrieval returns it verbatim.
+  - **Retrieval re-chunks at its own granularity** (~400 tokens versus 16 000
+    for summarising), which is what makes it work. With the coarse
+    summarisation chunks every similarity score sat between 0.44 and 0.50 — no
+    discrimination at all, because a 64 KB chunk embeds to a vector dominated by
+    its boilerplate. With fine chunks the correct chunk scores 0.61 against 0.50.
+  - Fixed a bug found by that live test: the first implementation truncated each
+    chunk to 8 000 characters before embedding, and the facts under test sat at
+    offsets 11 440 and 18 795 — they were never in the index.
+  - Vectors are JSONB with cosine computed in Python: pgvector is unavailable
+    here (needs OS-level install) and at ~5 000 chunks the maths is
+    milliseconds. Answers cite the sections they came from, and the model is
+    told to say so when the retrieved text does not contain the answer —
+    verified with a question the document does not cover.
+  - Each question costs ~9s of model swapping because the VM will not hold the
+    embedding and chat models together; `OLLAMA_MAX_LOADED_MODELS=2` on the
+    Ollama service would remove it (0.6 GB + 6 GB against 11.75 GB).
+  - 18 new tests (198 backend total) covering cosine edge cases, ranking order,
+    stable tie-breaking, score thresholds, and context assembly.
+  - End-to-end on the live service with a 650 KB document, all five phases:
+    upload and scope (11 chunks, tier `confirm`), index (597 retrieval chunks in
+    12.6s), three planted facts all retrieved correctly, summarise (5.4 min, 0
+    degraded, 117 key_facts), and a cached summary served in 0.28s. Retrieval
+    found all three facts; the summary carried one — the same split the 5 MB run
+    showed, reproduced at a tenth the size.
+  - Scope estimator recalibrated a second time. `CHUNK_SUMMARY_TOKENS` 150 → 800:
+    key_facts extraction roughly quintupled output per chunk, so the previous
+    figure under-predicted by 1.7x. It now reproduces both measured runs — 87
+    chunks predicted 45.6 against 43.5 actual, 11 chunks 6.5 against 5.4.
+
+- **Large-document pipeline, phase 4 — jobs, progress and cancellation**
+  (`backend/app/documents/jobs.py`, plus three endpoints): a 78-minute pipeline
+  cannot be an HTTP request, so `POST /api/documents/{id}/summarize` returns
+  immediately with a job id, `GET /api/documents/jobs/{id}` reports progress,
+  and `POST /api/documents/jobs/{id}/cancel` stops it.
+  - Verified live: start returned in **0.27s**, polling tracked `map 1/2` then
+    `reduce 0/1` with an ETA computed from the observed rate, and the job
+    completed in 1.0 min with the calibration constant retained.
+  - **Cancellation genuinely stops the work** — the job showed `0/1` eight
+    seconds after cancelling, and a second cancel is refused with 409. Chunk
+    summaries already computed survive, so a cancelled job is not wasted.
+  - **Completed summaries are stored** in a new `document_summaries` table and
+    served from it — a repeat request returned in **0.24s** instead of re-running
+    the pipeline. `?force=true` overrides.
+  - **Duplicate starts return the running job.** Two concurrent jobs over one
+    document would compete for the same single-model VM and double the wait for
+    nothing.
+  - Job state is deliberately in-memory: the expensive artefacts are in
+    Postgres, so a restart loses tracking but not work — a restarted job
+    replays from cache in seconds.
+  - 13 new tests (166 backend total) covering completion, failure capture,
+    duplicate starts, independent documents, cancellation actually halting
+    execution, refusing to cancel a finished job, phase transitions, and ETA
+    projection.
+
+- **Large-document pipeline, phase 3 — the reduce step**
+  (`backend/app/documents/reducer.py`, `reduce.py`): combines chunk summaries
+  into a `DocumentSummary` of `overview`, `key_findings`, `outline`, `entities`
+  and `gaps`.
+  - **Entities, outline and gaps are merged deterministically in code**, not by
+    the model, which only writes the two prose fields. Asked to merge 87 entity
+    lists a model silently drops some, and hierarchical reduce compounds that
+    loss at every level; computed in code, a name appearing once in chunk 3
+    reaches the final summary regardless of depth. A test asserts this, and
+    mutation-testing confirms it fails if the merge is moved off the originals.
+  - **Hierarchical when needed**: 87 chunk summaries fit a single reduce pass,
+    so the recursion exists for documents several times larger. Batching packs
+    summaries under a token budget and never drops one, even if a single summary
+    exceeds the budget alone.
+  - Runs on the `deep` role (qwen2.5:14b) — one model swap, worth it for the
+    output a person reads. A malformed response stitches the inputs rather than
+    discarding the entire map phase.
+  - **Numeric preservation fixed by testing**: on a live 4-chunk run the map
+    correctly captured a calibration constant of `8.472` and the reduce dropped
+    it, producing a shorter, better-reading summary that had lost the document's
+    most important value. Making the prompt insist that every number, threshold
+    and identifier be carried through restored it and lengthened the output from
+    711 to 1204 characters.
+  - 27 new tests (153 backend total) covering entity merging, outline
+    collapsing, gap collection, batching, hierarchical recursion, and stitching
+    on failure.
+
+- **Large-document pipeline, phase 2 — the map step**
+  (`backend/app/documents/mapper.py`, `summaries.py`, `callers.py`): one
+  structured-prose summary per chunk — `topic`, `findings`, `entities`,
+  `uncertain` — with caching that makes a long job resumable.
+  - **Three attempts of decreasing strictness**: structured output, structured
+    with an explicit JSON reminder, then unvalidated prose flagged `degraded`.
+    Over 87 chunks a small model will fail a schema occasionally; an 80-minute
+    job must not die on chunk 61. `asyncio.CancelledError` is re-raised rather
+    than mistaken for a schema failure and retried.
+  - **Cached in `chunk_summaries`**, keyed by
+    `(document_id, idx, model_name, prompt_version)` and written as each chunk
+    completes rather than batched, so a job killed at chunk 60 keeps the first
+    59. Measured against Postgres: a re-run was **106x faster** and fully
+    cache-served, and bumping `PROMPT_VERSION` correctly missed the cache
+    instead of serving summaries produced by older wording.
+  - **Sequential, not fanned out.** The VM serves one model on one GPU, so
+    parallel calls would queue at Ollama for no gain while making progress
+    reporting and cancellation harder.
+  - **Model access is injected**, so validation, repair, degradation, caching,
+    progress and cancellation are all covered by 12 offline tests (126 backend
+    total). `callers.py` is the only module that talks to Ollama.
+  - The per-chunk prompt spells out each field explicitly. Relying on the
+    schema's field descriptions alone, qwen3:8b returned an **empty `entities`
+    list** for text naming five people and companies, and a `topic` echoing the
+    document title; with explicit instructions it extracted all five names and
+    section-specific topics.
+
+- **Large-document pipeline, phase 1** (`backend/app/documents/`): upload,
+  storage, token-aware chunking, and a pre-flight scope check — all with **no
+  model calls**, so a 5 MB file is sized in milliseconds instead of silently
+  truncated to 0.46% of itself.
+  - `POST /api/documents` stores the file and returns what processing would
+    cost: for a real 5 MB upload, `87 chunks, about 78 minutes`, tier
+    `consider_retrieval`. `GET /api/documents/{id}` repeats the estimate.
+  - Documents are stored in Postgres rather than inlined into the chat message.
+    Inlined text is persisted into the LangGraph checkpoint and re-sent every
+    turn, so a large attachment would poison the thread permanently.
+  - Chunking prefers paragraph boundaries and overlaps consecutive chunks, so a
+    fact spanning a boundary survives in at least one of them. The invariant
+    that no chunk exceeds the budget is enforced and tested across budgets.
+  - Deduplication by SHA-256: re-uploading the same 5 MB file returned in 0.14s
+    versus 2.6s, with no duplicate rows. This matters more in phase 2, where it
+    will preserve per-chunk summaries that cost ~80 minutes to compute.
+  - Tier `single_pass` means a document fits one context window and skips the
+    pipeline entirely, so ordinary attachments never pay for any of this.
+  - 31 new tests (114 backend total), covering chunk budgets, overlap, coverage,
+    pathological input with no separators, tier thresholds, and that the
+    arithmetic chunk estimate stays within 10% of what the chunker really
+    produces — an estimate that drifts from reality would make the warning a lie.
+
+### Changed
+
+- **Attachment limits are now configurable** via `MAX_ATTACHMENT_CHARS` and
+  `MAX_ATTACHMENT_BYTES` in `frontend/.env.local` (see
+  `.env.local.example`). Read **server-side** in `app/page.tsx` and passed to
+  the client rather than exposed as `NEXT_PUBLIC_*`, because those are inlined
+  at build time — this way a change takes effect on a frontend restart with no
+  rebuild, which is the point when experimenting with large files. The page is
+  `force-dynamic` so the value is not frozen into a prerender. Invalid values
+  (empty, non-numeric, zero, negative) fall back to the defaults rather than
+  silently disabling the cap. `frontend/.gitignore` gained a negation so the
+  example template stays tracked while `.env.local` remains ignored.
+- **Context window 8192 → 32768**, history budget 3000 → 12000 tokens, and the
+  frontend attachment cap 6000 → 24000 characters. Measured on the 12 GB VM
+  rather than estimated: `qwen3:8b` uses 6.08 GB at 8k and 8.83 GB at its full
+  40 960-token context, **entirely in VRAM either way**, generating at 57.5 vs
+  57.6 tok/s — so ~4x more input costs nothing. 32768 leaves headroom under the
+  model's 40 960 ceiling.
+- `HISTORY_MAX_TOKENS` now defaults to a third of `OLLAMA_NUM_CTX` instead of a
+  fixed 3000. The two have to move together: raising the window alone leaves it
+  unused, raising the budget alone overflows it.
+- For the record, CPU offload is available and automatic but is the wrong tool
+  for large documents: `qwen2.5:14b` at 32k spills 3.46 GB to RAM and prompt
+  processing collapses from 621 to **47 tok/s** — a 30k-token document would
+  take ~10 minutes just to ingest, versus ~48s fully on GPU.
+
+### Fixed
+
+- `tests/test_history_trimming.py::test_history_is_actually_trimmed` asserted
+  against the deployed `HISTORY_MAX_TOKENS`, so raising it in `.env` failed a
+  test whose subject code was correct. It now pins its own budget, as the other
+  trimming tests already did.
+
+### Added
+
+- **Frontend test suite** (Vitest + Testing Library + jsdom): 23 tests, `pnpm
+  test`, ~3s. Added because the `crypto.randomUUID` attachment bug passed
+  `tsc`, `eslint` **and** the production build while the feature was entirely
+  broken — it was a runtime, environment-dependent failure, so only tests that
+  execute the code in a stubbed browser environment can catch that class.
+  - `lib/attachments.test.ts` and
+    `components/attachments/TextAttachmentAdapter.test.ts` cover truncation,
+    the truncation marker, the hard file limit, the text-part contract with the
+    backend, and — as an explicit regression — `add()` succeeding when
+    `crypto.randomUUID` is absent.
+  - `components/ThemeToggle.test.tsx` demonstrates component coverage with
+    next-themes stubbed.
+  - Tests run in `jsdom` rather than node, since the bugs worth catching here
+    involve browser APIs behaving differently than they do in Node. Stubbing an
+    insecure context requires replacing `globalThis.crypto` wholesale —
+    `delete crypto.randomUUID` silently does nothing, which would have made the
+    regression test pass against broken code.
+  - Verified by mutation: reintroducing the `crypto.randomUUID` bug, removing
+    the size cap, dropping the truncation marker, and switching the sent part
+    from `text` to `file` each fail specific tests.
+
+- **Text file attachments** (phase 1 of attachment support). Configuring an
+  attachment adapter on `useEdgeRuntime` is enough to make the composer's "+"
+  button appear — assistant-ui's built-in `ComposerAddAttachment` opens an
+  `<input type="file">` filtered by the adapter's `accept`, so no custom UI was
+  needed. Verified by a control build: the button is absent without the adapter.
+  - `frontend/components/attachments/TextAttachmentAdapter.ts` reads the file in
+    the browser and sends it as an ordinary **text** part, which the chat route's
+    `convert_to_langchain_messages` already handles — so this needs no backend
+    change.
+  - `frontend/lib/attachments.ts` caps each attachment at 6000 characters
+    (matching the backend's `REST_TOOL_MAX_CHARS`) and appends an explicit
+    truncation marker; files over 1 MB are rejected before being read. An
+    attachment is inlined into the message and then persisted in the checkpoint,
+    so an uncapped one would compete for the model's 8192-token context on every
+    later turn of the thread — `SimpleTextAttachmentAdapter` from the library
+    has no such limit, which is why it is not used.
+  - Accepts `.txt .md .csv .tsv .json .xml .yaml .html .css .log` plus `text/*`;
+    extensions are listed alongside MIME types because browsers report
+    inconsistent types for Markdown and YAML.
+  - Attachment ids come from `attachmentId()`, which falls back when
+    `crypto.randomUUID` is missing. That API exists only in a **secure context**
+    (HTTPS or localhost), and this app is served over plain HTTP on
+    `0.0.0.0:3000` — so a browser reaching it by LAN address threw inside
+    `add()`, the attachment was never added, and the message was sent without
+    it while the model correctly reported seeing no file.
+
 ## [1.2.0] - 2026-08-03
 
 ### Added
