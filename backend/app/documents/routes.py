@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from .callers import make_callers, make_reduce_caller
 from .embeddings import embed_query, make_embedder
 from .indexing import ensure_indexed
-from .retrieval import build_context, rank_chunks
+from .retrieval import build_context, hybrid_search
 from .jobs import registry, run_summary
 from .mapper import map_document
 from .reduce import REDUCE_PROMPT_VERSION
@@ -277,15 +277,16 @@ async def ask_document(document_id: uuid.UUID, body: Question):
         )
 
     query_vector = await embed_query(body.question, embedder)
-    matches = rank_chunks(query_vector, stored, texts, top_k=body.top_k)
+    matches = hybrid_search(body.question, query_vector, stored, texts, top_k=body.top_k)
 
-    context = build_context(matches)
+    context = build_context(matches, texts)
     structured, plain, answer_model = make_callers()
     answer = await plain([
         SystemMessage(
             "Answer using only the document sections provided. Quote specific "
-            "values exactly. If the sections do not contain the answer, say so "
-            "rather than guessing."
+            "values exactly. You may recognise this document from training - "
+            "ignore what you recall and use only these sections. If they do not "
+            "contain the answer, say so rather than guessing."
         ),
         HumanMessage(
             f"Sections from the document:\n\n{context}\n\n"

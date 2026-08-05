@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.documents.chunker import estimate_tokens
 from app.documents.retrieval import Match, build_context, cosine_similarity, rank_chunks
 
 
@@ -81,15 +82,18 @@ class TestContext:
         assert "[Section 1]" in context and "[Section 5]" in context
         assert "alpha" in context and "beta" in context
 
-    def test_respects_the_character_budget(self):
-        matches = [Match(i, 1.0, "x" * 5000) for i in range(10)]
-        assert len(build_context(matches, max_chars=12_000)) < 13_000
+    def test_respects_the_token_budget(self):
+        # Budgeted in tokens rather than characters: a character cap admitted
+        # nearly twice as much Russian as English for the same number.
+        matches = [Match(i, 1.0, "x " * 2500) for i in range(10)]
+        context = build_context(matches, max_tokens=3_000, neighbour_radius=0)
+        assert estimate_tokens(context) < 3_300
 
     def test_always_includes_the_best_match_even_if_oversized(self):
         # Returning nothing because the top chunk is large would be worse than
         # a slightly over-budget prompt.
-        matches = [Match(0, 1.0, "y" * 50_000)]
-        assert build_context(matches, max_chars=1_000) != ""
+        matches = [Match(0, 1.0, "y " * 25_000)]
+        assert build_context(matches, max_tokens=1_000, neighbour_radius=0) != ""
 
     def test_empty_matches_give_empty_context(self):
         assert build_context([]) == ""

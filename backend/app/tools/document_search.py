@@ -17,13 +17,37 @@ from langchain_core.tools import tool
 
 from ..documents.embeddings import embed_query, make_embedder
 from ..documents.indexing import ensure_indexed
-from ..documents.retrieval import build_context, rank_chunks
+from ..documents.retrieval import build_context, hybrid_search
 from ..documents.store import get_document, load_retrieval_chunks
 from .base import ToolSpec, register
 
 logger = logging.getLogger(__name__)
 
-TOP_K = int(os.getenv("DOCUMENT_SEARCH_TOP_K", "5"))
+# Raised from 5 after a question about a Russian novel returned four passages
+# from the wrong scenes. Five ~400-token windows is enough for "what is the
+# calibration constant" and nowhere near enough for "who was present", where the
+# answer is spread across a scene several chunks long.
+TOP_K = int(os.getenv("DOCUMENT_SEARCH_TOP_K", "12"))
+
+# Recomputed from the environment rather than imported from app.langgraph.agent:
+# that module builds the graph, which imports the tool registry, which imports
+# this. Same expression, no cycle.
+HISTORY_MAX_TOKENS = int(
+    os.getenv("HISTORY_MAX_TOKENS") or int(os.getenv("OLLAMA_NUM_CTX", "8192")) // 3
+)
+
+# Derived from the history budget rather than fixed, because the two have to
+# move together: the passages arrive as a ToolMessage and are trimmed like
+# anything else in the conversation, so a tool result larger than
+# HISTORY_MAX_TOKENS is discarded before the model reads it. Somewhat over half
+# leaves room for the question and a few prior turns.
+#
+# This is the binding constraint on document questions, not top_k. Raising
+# OLLAMA_NUM_CTX lifts it automatically; raising this alone evicts the
+# conversation instead.
+CONTEXT_TOKENS = int(
+    os.getenv("DOCUMENT_CONTEXT_TOKENS") or int(HISTORY_MAX_TOKENS * 0.55)
+)
 
 
 @tool
@@ -53,16 +77,19 @@ async def search_document(document_id: str, question: str) -> str:
         return f"Error: {document.name} could not be indexed."
 
     query_vector = await embed_query(question, embedder)
-    matches = rank_chunks(query_vector, stored, texts, top_k=TOP_K)
+    matches = hybrid_search(question, query_vector, stored, texts, top_k=TOP_K)
     if not matches:
         return f"No passages in {document.name} matched that question."
 
-    context = build_context(matches)
+    context = build_context(matches, texts, max_tokens=CONTEXT_TOKENS)
     return (
         f"Passages from {document.name} most relevant to the question:\n\n"
         f"{context}\n\n"
-        "Answer from these passages only. If they do not contain the answer, "
-        "say so rather than guessing."
+        "Answer from these passages only, and name the section each fact came "
+        "from. You may recognise this document from training - ignore anything "
+        "you recall about it, because your memory of it is unreliable and these "
+        "passages are not. If they do not contain the answer, say so plainly "
+        "rather than filling the gap."
     )
 
 

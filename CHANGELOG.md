@@ -48,7 +48,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     the cost of *summarising*, and showing "about 45 minutes" inline would
     imply the next question takes that long.
 
+- **Hybrid retrieval: BM25 fused with the vector search**
+  (`backend/app/documents/lexical.py`, `retrieval.py`). Testing the complete
+  text of *War and Peace* produced a confident, largely fabricated answer, and
+  the cause was that the model never received the right passages. Measured on
+  the 2 669-chunk index, the vector channel ranked the correct chunk **168th**
+  for "Что произошло с Платоном Каратаевым?" and **374th** for "Кто такая
+  Марья Дмитриевна Ахросимова?" — with `top_k=5`. BM25 puts both at **rank 1**.
+  `nomic-embed-text` is English-only and its Russian vectors collapse into a
+  narrow cone: median cosine 0.80 against 0.48 for the same pipeline on English,
+  so rare proper nouns — exactly what these questions turn on — cannot win.
+  - Fused by **reciprocal rank**, not score: cosine sat between 0.80 and 0.88
+    while BM25 ran 0 to 30, and the cosine spread was too narrow to weight.
+  - **Candidates are capped per channel**, which is what makes fusion work
+    rather than merely average. Fusing full rankings measured *worse* than
+    lexical search alone, because deep vector ranks lifted mediocre hits above
+    good ones: capped at 50, Ахросимова goes 374 → 1 and Каратаев 168 → 4.
+  - Retrieved chunks are expanded to their **neighbours**, since a scene runs
+    across consecutive chunks, and the context is assembled **matches first,
+    then neighbours** so a good match is never displaced by context around a
+    better one.
+  - `top_k` 5 → 12, and the context budget is now denominated in **tokens, not
+    characters** — 12 000 characters is ~3 000 tokens of English but ~5 700 of
+    Russian, so one cap admitted twice as much of one language as the other.
+  - End to end on six Russian questions, passages containing the answer went
+    from **0/6 to 5/6**. The English document that already worked still returns
+    its planted facts. Verified live.
+
 ### Fixed
+
+- **The token estimator was 1.92x wrong on non-Latin text**
+  (`backend/app/documents/chunker.py`). It assumed 4 characters per token for
+  every script; measured against cl100k on 3.2 MB of Russian, the real figure is
+  2.08. Every budget denominated in these units inherited the error —
+  "400-token" retrieval chunks were really ~770 tokens, and the history trimmer
+  kept nearly double what it believed, which is a context overflow rather than a
+  rounding error. Now script-aware, and shared with the trimmer via
+  `count_message_tokens` so the two budgets cannot drift apart. ASCII text takes
+  the original path unchanged, so English behaviour is bit-for-bit identical, and
+  the new counter is floored at the old one so it can never keep *more* history
+  than before. Tool calls are counted too: their content is often empty while
+  the call itself is real tokens.
 
 - **A document could be embedded twice, concurrently**
   (`backend/app/documents/indexing.py`). Uploading fires an index request while

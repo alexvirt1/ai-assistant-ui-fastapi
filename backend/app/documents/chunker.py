@@ -28,15 +28,87 @@ _SEPARATORS = ("\n\n", "\n", ". ", " ", "")
 _MESSAGE_OVERHEAD = count_tokens_approximately([HumanMessage("")])
 
 
+# Characters per token, by script.
+#
+# The plain estimator assumes 4.0 for everything, which is close for English and
+# badly wrong for anything else. Measured against cl100k on the 3.2 MB Russian
+# text of War and Peace: 2.08 characters per token, a 1.94x undercount. Every
+# budget denominated in these units inherited that error - "400-token" retrieval
+# chunks were really ~770 tokens, and the history trimmer kept nearly twice what
+# it believed it was keeping, which is an overflow rather than a rounding error.
+#
+# 1.8 rather than the measured 2.08 because over-estimating is the safe
+# direction: chunks come out under budget and the trimmer keeps slightly less
+# than it could, where under-estimating overflows the context window.
+_ASCII_CHARS_PER_TOKEN = 4.0
+_WIDE_CHARS_PER_TOKEN = 1.8
+
+
 def estimate_tokens(text: str) -> int:
     """Approximate token count for raw text.
 
     Uses the same estimator as the history trimmer, so the chunker's budget and
     the trimmer's budget are denominated in the same (approximate) unit.
+
+    Pure-ASCII text takes the original path unchanged, so English chunking,
+    scope estimates and the trimmer behave exactly as before; only text the old
+    estimator was demonstrably wrong about is treated differently.
     """
     if not text:
         return 0
-    return max(0, count_tokens_approximately([HumanMessage(text)]) - _MESSAGE_OVERHEAD)
+    if text.isascii():
+        return max(0, count_tokens_approximately([HumanMessage(text)]) - _MESSAGE_OVERHEAD)
+
+    # UTF-8 byte count minus character count gives 1 per two-byte character
+    # (Cyrillic, Greek, accented Latin) and 2 per three-byte one (CJK). C-speed,
+    # where a per-character loop is far too slow to call from the chunker's
+    # inner loop. CJK is thereby weighted double, which is roughly right: it is
+    # about one token per character, not one per two.
+    wide = len(text.encode("utf-8")) - len(text)
+    ascii_chars = max(0, len(text) - wide)
+    return int(ascii_chars / _ASCII_CHARS_PER_TOKEN + wide / _WIDE_CHARS_PER_TOKEN)
+
+
+def count_message_tokens(messages) -> int:
+    """Token counter for `trim_messages`, in the same unit as estimate_tokens.
+
+    Kept here rather than in the agent so the trimmer's budget and the
+    chunker's cannot drift apart: they are the same number denominated the same
+    way, which is the whole reason the chunker borrowed this estimator.
+
+    Content may be a plain string or the list-of-parts form a multimodal message
+    uses. Tool calls are counted too: their name and arguments are serialised
+    into the prompt like anything else, and an AIMessage that requests a tool
+    often has empty content, so counting only `.content` would score a real
+    request as nearly free and let the trimmer keep far more than its budget.
+    """
+    total = 0
+    for message in messages:
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        else:
+            text = str(content)
+
+        # The whole call, not just name and args: the id and type fields are
+        # serialised into the request too, and leaving them out made this
+        # counter more permissive than the one it replaced on ASCII history -
+        # the wrong direction for a budget whose job is to prevent overflow.
+        for call in getattr(message, "tool_calls", None) or []:
+            text += f" {call}"
+
+        total += estimate_tokens(text) + _MESSAGE_OVERHEAD
+
+    # Never below the counter this replaces. The correction exists for scripts
+    # that one undercounts; it must not become a licence to keep more history
+    # than before on the ASCII text where that one is already accurate, and it
+    # models role names and metadata slightly more cheaply than langchain does.
+    return max(total, count_tokens_approximately(messages))
 
 
 @dataclass(frozen=True)

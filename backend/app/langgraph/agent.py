@@ -8,10 +8,10 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
-from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.prebuilt import create_react_agent
 from langgraph.prebuilt.chat_agent_executor import AgentState
 
+from ..documents.chunker import count_message_tokens
 from ..models import DEFAULT_ROLE, make_chat_model
 from ..tools import compose_prompt, get_enabled_specs
 
@@ -141,7 +141,11 @@ def make_prompt(system_prompt: str):
         trimmed = trim_messages(
             messages,
             max_tokens=HISTORY_MAX_TOKENS,
-            token_counter=count_tokens_approximately,
+            # Script-aware, unlike count_tokens_approximately: on Russian that
+            # one undercounts by ~1.94x, so the trimmer kept nearly double its
+            # budget and could overflow the real context window. Identical on
+            # ASCII, so English threads trim exactly as before.
+            token_counter=count_message_tokens,
             strategy="last",
             # Never begin on an orphaned ToolMessage: a tool result whose
             # calling AIMessage was trimmed away is rejected by the provider.
