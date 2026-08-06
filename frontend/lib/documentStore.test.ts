@@ -5,9 +5,12 @@ import {
   addDocument,
   type AttachedDocument,
   clearDocuments,
+  finishUpload,
   getDocuments,
+  getPendingUploads,
   setDocumentStatus,
   setDocuments,
+  startUpload,
   subscribe,
 } from "./documentStore";
 
@@ -152,11 +155,92 @@ describe("documentStore", () => {
     });
   });
 
+  describe("uploads in flight", () => {
+    it("starts with nothing uploading", () => {
+      expect(getPendingUploads()).toEqual([]);
+    });
+
+    it("records a file while it uploads", () => {
+      startUpload("att-1", "big.txt");
+      expect(getPendingUploads()).toEqual([{ id: "att-1", name: "big.txt" }]);
+    });
+
+    it("keeps an upload out of the list sent to the backend", () => {
+      // The whole reason uploads are a separate slice: getDocuments() tells the
+      // model what it may search, and a file still in flight has no document id
+      // to search by.
+      startUpload("att-1", "big.txt");
+      expect(getDocuments()).toEqual([]);
+    });
+
+    it("notifies so the chip appears while the upload runs", () => {
+      const listener = vi.fn();
+      subscribe(listener);
+      startUpload("att-1", "big.txt");
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops the upload once it settles", () => {
+      startUpload("att-1", "big.txt");
+      finishUpload("att-1");
+      expect(getPendingUploads()).toEqual([]);
+    });
+
+    it("notifies so the chip disappears when the upload settles", () => {
+      startUpload("att-1", "big.txt");
+      const listener = vi.fn();
+      subscribe(listener);
+      finishUpload("att-1");
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it("tracks concurrent uploads separately", () => {
+      startUpload("att-1", "big.txt");
+      startUpload("att-2", "other.txt");
+      finishUpload("att-1");
+      expect(getPendingUploads()).toEqual([{ id: "att-2", name: "other.txt" }]);
+    });
+
+    it("ignores a duplicate start", () => {
+      startUpload("att-1", "big.txt");
+      startUpload("att-1", "big.txt");
+      expect(getPendingUploads()).toHaveLength(1);
+    });
+
+    it("stays quiet when finishing an upload it never had", () => {
+      // send() clears in a `finally`, which also runs on the inline path where
+      // no upload was ever started.
+      const listener = vi.fn();
+      subscribe(listener);
+      finishUpload("att-1");
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it("returns a stable reference between changes", () => {
+      const before = getPendingUploads();
+      expect(getPendingUploads()).toBe(before);
+    });
+  });
+
   describe("clearing", () => {
     it("drops every document", () => {
       addDocument(uploaded());
       clearDocuments();
       expect(getDocuments()).toEqual([]);
+    });
+
+    it("drops uploads in flight too", () => {
+      startUpload("att-1", "big.txt");
+      clearDocuments();
+      expect(getPendingUploads()).toEqual([]);
+    });
+
+    it("notifies when only an upload was in flight", () => {
+      startUpload("att-1", "big.txt");
+      const listener = vi.fn();
+      subscribe(listener);
+      clearDocuments();
+      expect(listener).toHaveBeenCalledTimes(1);
     });
 
     it("notifies so the chips disappear with the conversation", () => {

@@ -99,6 +99,22 @@ and `authorization` upstream — inert with no login, present so that adding one
 is a backend change rather than a hunt for where the credential was dropped —
 and all three read the backend address from `BACKEND_URL`.
 
+**A large attachment now says it is uploading.** The chips added in 1.3.0 cover
+indexing, which is the minute *after* a document exists — they could not cover
+the seconds before it, because until the upload answers there is no document to
+make a chip from. That window was invisible and it is the one the user is
+actually waiting in: the composer appends the message only once every attachment
+has been sent, so pressing send on a multi-megabyte file left the text sitting
+in the composer with no chip, no message and no running indicator anywhere on
+screen. The adapter now registers the file with the document store before the
+request goes out and clears it in a `finally`, so the chip reads
+`name · uploading…` from the moment send is pressed, becomes
+`name · N sections · preparing…` when the upload answers, and disappears
+entirely if the upload failed and the fallback inlined a truncated copy instead.
+Uploads in flight are a separate slice of the store rather than a fourth
+document status: `getDocuments()` is what the runtime sends to the backend, and
+a file with no id yet is not something the model can be told to search.
+
 ## [1.3.0] - 2026-08-05
 
 Attachments, end to end: a file dropped into the composer becomes a searchable

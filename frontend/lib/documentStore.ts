@@ -39,7 +39,23 @@ export type AttachedDocument = {
   message: string;
 };
 
+/**
+ * A file on its way to the document pipeline.
+ *
+ * Deliberately separate from the attached list rather than a fourth
+ * DocumentStatus: getDocuments() is what the runtime sends to the backend as
+ * the documents the model may search, and a file still in flight has no id to
+ * search by. Keeping it out of that list is what stops the model being told
+ * about a document the backend has not stored yet.
+ */
+export type PendingUpload = {
+  /** The composer attachment's id - the document id does not exist yet. */
+  id: string;
+  name: string;
+};
+
 let attached: AttachedDocument[] = [];
+let uploading: PendingUpload[] = [];
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -92,9 +108,38 @@ export function setDocumentStatus(id: string, status: DocumentStatus): void {
   emit();
 }
 
+/**
+ * Announce that a file is being uploaded.
+ *
+ * The upload is the one step of the attachment path with nothing to show for
+ * itself: the composer holds the message until every attachment has been sent,
+ * so between pressing send and the backend answering there is no chip, no
+ * message and no running indicator anywhere on screen. This is that missing
+ * acknowledgement, and it is the store's job because the adapter that does the
+ * uploading lives outside the component tree.
+ */
+export function startUpload(id: string, name: string): void {
+  if (uploading.some((u) => u.id === id)) return;
+  uploading = [...uploading, { id, name }];
+  emit();
+}
+
+/** Upload settled - succeeded, failed, or fell back to inline text. */
+export function finishUpload(id: string): void {
+  if (!uploading.some((u) => u.id === id)) return;
+  uploading = uploading.filter((u) => u.id !== id);
+  emit();
+}
+
+/** Stable reference between changes, as useSyncExternalStore requires. */
+export function getPendingUploads(): PendingUpload[] {
+  return uploading;
+}
+
 export function clearDocuments(): void {
-  if (attached.length === 0) return;
+  if (attached.length === 0 && uploading.length === 0) return;
   attached = [];
+  uploading = [];
   emit();
 }
 
