@@ -42,7 +42,7 @@ def first_user_text(messages: list) -> str:
 def to_core_messages(messages: list) -> list[dict]:
     """Render stored state as assistant-ui CoreMessages.
 
-    Three things are deliberate here:
+    Four things are deliberate here:
 
     - System messages are dropped. The system prompt is assembled server-side
       on every call (see make_prompt) and is not part of the conversation the
@@ -51,9 +51,18 @@ def to_core_messages(messages: list) -> list[dict]:
       than emitted as its own message. That is how assistant-ui models a tool
       call, and it means a restored thread renders its tool cards complete
       with results instead of showing a spinner that never resolves.
-    - Messages carrying neither text nor tool calls are skipped. An empty
-      assistant bubble in a restored thread looks like a failure that did not
-      happen.
+    - Everything the assistant produced between two user turns becomes ONE
+      message, however many times the ReAct loop went round. A stored turn is
+      AIMessage(tool_calls) -> ToolMessage -> AIMessage(text), which the live
+      runtime shows as a single message with parts appended to it; emitting one
+      message per AIMessage instead put an extra assistant bubble above every
+      answer that used a tool. It rendered empty, because a completed tool call
+      draws nothing by design (see ToolExecutionIndicators) - so a restored
+      conversation showed a blank bubble where the live one had shown a
+      progress indicator that has since finished.
+    - An assistant turn with no text at all is dropped. That is a run cancelled
+      after the tool call and before the answer: every part it has renders
+      nothing, so keeping it would produce exactly the blank bubble above.
     """
     # Tool results arrive after the AIMessage that called them, so collect them
     # first and attach on the way out rather than mutating an emitted message.
@@ -63,18 +72,28 @@ def to_core_messages(messages: list) -> list[dict]:
             results[message.tool_call_id] = message
 
     out: list[dict] = []
+    # Parts of the assistant turn being assembled, across however many
+    # AIMessages the ReAct loop produced.
+    turn: list[dict] = []
+
+    def end_assistant_turn() -> None:
+        # Text is what makes a turn worth showing: the tool parts render
+        # nothing once complete, so a turn without text is a blank bubble.
+        if any(part["type"] == "text" for part in turn):
+            out.append({"role": "assistant", "content": list(turn)})
+        turn.clear()
+
     for message in messages:
         if isinstance(message, HumanMessage):
+            end_assistant_turn()
             text = content_to_text(message.content)
             if text:
                 out.append({"role": "user", "content": [{"type": "text", "text": text}]})
 
         elif isinstance(message, AIMessage):
-            content: list[dict] = []
-
             text = content_to_text(message.content)
             if text:
-                content.append({"type": "text", "text": text})
+                turn.append({"type": "text", "text": text})
 
             for call in message.tool_calls or []:
                 call_id = call.get("id") or ""
@@ -91,9 +110,7 @@ def to_core_messages(messages: list) -> list[dict]:
                     part["result"] = content_to_text(result.content)
                     if getattr(result, "status", None) == "error":
                         part["isError"] = True
-                content.append(part)
+                turn.append(part)
 
-            if content:
-                out.append({"role": "assistant", "content": content})
-
+    end_assistant_turn()
     return out

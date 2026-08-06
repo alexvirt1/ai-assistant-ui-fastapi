@@ -108,7 +108,7 @@ class TestToCoreMessages:
             ]
         )
 
-        assert [m["role"] for m in restored] == ["user", "assistant", "assistant"]
+        assert [m["role"] for m in restored] == ["user", "assistant"]
         call = restored[1]["content"][0]
         assert call == {
             "type": "tool-call",
@@ -118,18 +118,89 @@ class TestToCoreMessages:
             "result": "12:00",
         }
 
+    def test_a_tool_turn_is_one_message_not_two(self):
+        # REGRESSION: every answer that used a tool came back with an empty
+        # assistant bubble above it. The tool-calling AIMessage became its own
+        # message, and a completed tool call renders nothing by design, so the
+        # bubble had an avatar and no content. Live, the same turn is one
+        # message with the parts appended to it.
+        restored = to_core_messages(
+            [
+                HumanMessage(content="what was invented in 2025?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "c1", "name": "web_search", "args": {"query": "2025"}}],
+                ),
+                ToolMessage(content="results", tool_call_id="c1"),
+                AIMessage(content="In 2025, several inventions…"),
+            ]
+        )
+
+        assert [m["role"] for m in restored] == ["user", "assistant"]
+        assert [p["type"] for p in restored[1]["content"]] == ["tool-call", "text"]
+
+    def test_several_tool_rounds_still_make_one_message(self):
+        restored = to_core_messages(
+            [
+                HumanMessage(content="compare them"),
+                AIMessage(content="", tool_calls=[{"id": "c1", "name": "web_search", "args": {}}]),
+                ToolMessage(content="first", tool_call_id="c1"),
+                AIMessage(content="", tool_calls=[{"id": "c2", "name": "fetch_page", "args": {}}]),
+                ToolMessage(content="second", tool_call_id="c2"),
+                AIMessage(content="Here is the comparison."),
+            ]
+        )
+
+        assert [m["role"] for m in restored] == ["user", "assistant"]
+        assert [p["type"] for p in restored[1]["content"]] == [
+            "tool-call",
+            "tool-call",
+            "text",
+        ]
+
+    def test_separate_turns_stay_separate(self):
+        # The merge must stop at the next user turn, or a whole conversation
+        # would collapse into a single answer.
+        restored = to_core_messages(
+            [
+                HumanMessage(content="first question"),
+                AIMessage(content="first answer"),
+                HumanMessage(content="second question"),
+                AIMessage(content="second answer"),
+            ]
+        )
+        assert [m["role"] for m in restored] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+
     def test_a_call_without_a_result_keeps_no_result_key(self):
         # A run cancelled mid-tool leaves the call unanswered; inventing an
         # empty result would render as a tool that returned nothing.
         restored = to_core_messages(
             [
+                HumanMessage(content="search it"),
                 AIMessage(
-                    content="",
+                    content="answered anyway",
                     tool_calls=[{"id": "call_1", "name": "search_document", "args": {}}],
-                )
+                ),
             ]
         )
-        assert "result" not in restored[0]["content"][0]
+        assert "result" not in restored[1]["content"][1]
+
+    def test_a_turn_that_only_called_tools_is_dropped(self):
+        # A run cancelled between the tool result and the answer. Every part it
+        # has renders nothing, so keeping it is the blank bubble again.
+        restored = to_core_messages(
+            [
+                HumanMessage(content="search it"),
+                AIMessage(content="", tool_calls=[{"id": "c1", "name": "web_search", "args": {}}]),
+                ToolMessage(content="results", tool_call_id="c1"),
+            ]
+        )
+        assert [m["role"] for m in restored] == ["user"]
 
     def test_text_and_tool_call_in_one_message_keep_their_order(self):
         restored = to_core_messages(

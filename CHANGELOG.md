@@ -54,6 +54,19 @@ only the most recent page, and without cancellation a slow early response can
 land after a fast later one and repaint the list for a prefix already typed
 past.
 
+**Fixed: an empty assistant bubble above every restored answer that used a
+tool.** A ReAct turn is stored as `AIMessage(tool_calls)` → `ToolMessage` →
+`AIMessage(text)`, and the replay emitted one message per `AIMessage`. Live,
+that turn is a single message with parts appended to it; restored, the
+tool-calling half became its own bubble — and since a completed tool call
+deliberately renders nothing (the running indicator is meant to disappear), the
+bubble arrived with an avatar and no content. Everything the assistant produced
+between two user turns is now one message, however many times the loop went
+round, and a turn with no text at all — a run cancelled between the tool result
+and the answer — is dropped rather than shown blank. Confirmed against a live
+two-turn conversation that had produced two such bubbles: it now replays as
+four messages, each turn a single `[tool-call, text]`.
+
 **Multiple chats, part 3: documents belong to a conversation.** A
 `chat_thread_documents` table records which documents a chat can search, with
 no `user_id` of its own — ownership is inherited through the thread, and a
