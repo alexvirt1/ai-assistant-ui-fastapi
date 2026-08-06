@@ -90,6 +90,33 @@ export async function fetchChatMessages(
   return json<RestoredMessage[]>(response, "Loading history");
 }
 
+/**
+ * The documents a conversation can search.
+ *
+ * Shaped to match the store's AttachedDocument, because that is what it
+ * populates - the chips a restored conversation shows are drawn from the same
+ * rows the backend renders into the system prompt.
+ */
+export type ChatDocument = {
+  id: string;
+  name: string;
+  sections: number;
+  status: "indexing" | "ready" | "failed";
+  tier: string;
+  message: string;
+};
+
+export async function fetchChatDocuments(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<ChatDocument[]> {
+  const response = await fetch(
+    `/api/chats/${encodeURIComponent(threadId)}/documents`,
+    { signal, headers: { accept: "application/json" } },
+  );
+  return json<ChatDocument[]>(response, "Loading documents");
+}
+
 export async function renameChat(
   threadId: string,
   title: string,

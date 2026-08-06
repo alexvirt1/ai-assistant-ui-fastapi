@@ -79,6 +79,15 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         messages = (state.values or {}).get("messages", []) if state else []
         return to_core_messages(messages)
 
+    @router.get("/{thread_id}/documents")
+    async def get_chat_documents(
+        thread_id: str,
+        user_id: str = Depends(current_user_id),
+    ) -> list[dict]:
+        if await chat_store.get_thread(thread_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="No such chat")
+        return await chat_store.list_thread_documents(thread_id, user_id)
+
     @router.patch("/{thread_id}")
     async def update_chat(
         thread_id: str,

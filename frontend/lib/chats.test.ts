@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { deleteChat, fetchChatMessages, listChats, renameChat } from "./chats";
+import {
+  deleteChat,
+  fetchChatDocuments,
+  fetchChatMessages,
+  listChats,
+  renameChat,
+} from "./chats";
 
 function mockFetch(response: Partial<Response> & { json?: () => unknown }) {
   // Typed via the generic rather than by declaring unused parameters: without
@@ -85,5 +91,22 @@ describe("deleteChat", () => {
   it("still reports a real failure", async () => {
     mockFetch({ ok: false, status: 500 });
     await expect(deleteChat("t1")).rejects.toThrow("Deleting chat failed (500)");
+  });
+});
+
+describe("fetchChatDocuments", () => {
+  it("asks the thread's own documents endpoint", async () => {
+    const fetchMock = mockFetch({ json: async () => [] });
+    await fetchChatDocuments("t1");
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/chats/t1/documents");
+  });
+
+  it("throws rather than reporting nothing attached", async () => {
+    // Returning [] on failure would tell the user this conversation has no
+    // documents, which is a different and wrong statement.
+    mockFetch({ ok: false, status: 500 });
+    await expect(fetchChatDocuments("t1")).rejects.toThrow(
+      "Loading documents failed (500)",
+    );
   });
 });

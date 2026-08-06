@@ -209,6 +209,27 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
             # unreachable the answer should still stream - the chat simply
             # will not be listed.
             logger.exception("could not register thread %s", thread_id)
+
+        # Attach whatever the client says is on this conversation, then take
+        # the authoritative list back from the database.
+        #
+        # The client is the only thing that knows a file was just uploaded, so
+        # it still sends the list - but it must not be the only thing that
+        # remembers. Reading it back means a document attached ten turns ago
+        # stays reachable after a reload, in a second tab, or from a browser
+        # that has never seen it, and a client cannot announce a document that
+        # was never attached to this thread.
+        documents = [d.model_dump() for d in (request.documents or [])]
+        if chat_store.database_url():
+            try:
+                await chat_store.attach_documents(
+                    thread_id, [str(d["id"]) for d in documents if d.get("id")]
+                )
+                documents = await chat_store.list_thread_documents(thread_id, user_id)
+            except Exception:
+                # Falls back to what the client sent, which is what this did
+                # before the association existed.
+                logger.exception("could not resolve documents for %s", thread_id)
         async def run(controller: RunController):
             tool_calls = {}
             tool_calls_by_idx = {}
@@ -246,9 +267,7 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 controller.append_text(text)
                 emitted_text += text
 
-            document_block = render_document_block(
-                [d.model_dump() for d in (request.documents or [])]
-            )
+            document_block = render_document_block(documents)
 
             try:
                 async for msg, metadata in graph.astream(

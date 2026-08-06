@@ -54,6 +54,26 @@ only the most recent page, and without cancellation a slow early response can
 land after a fast later one and repaint the list for a prefix already typed
 past.
 
+**Multiple chats, part 3: documents belong to a conversation.** A
+`chat_thread_documents` table records which documents a chat can search, with
+no `user_id` of its own — ownership is inherited through the thread, and a
+second copy of the owner is a second thing that can be wrong. The client still
+sends its list on every turn, because it is the only thing that knows a file
+was just uploaded, but it is no longer the only thing that remembers: the
+backend attaches what it is told, then renders the system-prompt block from the
+database. Verified end to end — a second turn whose request carried no
+`documents` field at all still answered from the attached specification, where
+before the reference would simply have been absent.
+
+That also removes the localStorage mirror added in 1.3.0. It existed because
+the conversation came back from Postgres on reload while attachments did not;
+the association is in Postgres now, and a browser-side copy of an authoritative
+server list is one more thing that can silently disagree with it. Opening a
+chat fetches its documents the same way it fetches its transcript, so switching
+away and back restores the chips — which single-slot storage could not do —
+and a chat opened in a second browser sees them too. Deleting a chat drops its
+associations by cascade and leaves the documents themselves in the corpus.
+
 Thread ids are now minted in the browser, because the sidebar needs the id
 before the first message is sent. `crypto.randomUUID` is not available outside
 a secure context and this app is served over plain http on a LAN address, where

@@ -1,7 +1,6 @@
 "use client";
 
 import type { UploadedDocument } from "./attachments";
-import { readThreadCookie } from "./thread";
 
 /**
  * Documents attached to the current conversation.
@@ -48,68 +47,23 @@ function emit() {
 }
 
 /**
- * Where attached documents survive a page reload.
+ * Replace the list wholesale - what a conversation has attached, as the
+ * backend knows it.
  *
- * They have to. The conversation lives in Postgres and comes back on reload,
- * but this store was memory-only — so after a refresh the thread still showed
- * an answer citing "[Section 148]" while nothing knew which document that was,
- * and the backend stopped being told a document was attached at all, losing the
- * pinned system-prompt block that makes it searchable.
- *
- * Keyed by thread id so a different conversation never inherits them. The
- * thread cookie is deliberately not httpOnly, so it is readable here.
+ * This is where the list comes from now. It used to be mirrored into
+ * localStorage so a reload could restore it, but the association lives in
+ * Postgres as of chat_thread_documents, and a browser-side copy of an
+ * authoritative server list is one more thing that can silently disagree with
+ * it. A reload now restores documents the same way it restores the
+ * conversation: by asking the backend.
  */
-const STORAGE_KEY = "assistant_attached_documents";
-
-function currentThread(): string {
-  return readThreadCookie() ?? "";
-}
-
-function persist(): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (attached.length === 0) {
-      window.localStorage.removeItem(STORAGE_KEY);
-      return;
-    }
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ thread: currentThread(), documents: attached }),
-    );
-  } catch {
-    // Full quota or a privacy mode that forbids storage. Losing persistence is
-    // a degraded experience; throwing here would break attaching a file.
-  }
-}
-
-/**
- * Restore documents saved by an earlier page load.
- *
- * Called from an effect rather than at module scope on purpose: reading storage
- * during import would make the first client render disagree with the
- * server-rendered HTML, which is a hydration error. Same reason ThemeToggle
- * guards on mount.
- */
-export function hydrateDocuments(): void {
-  if (typeof window === "undefined" || attached.length > 0) return;
-  let stored: unknown;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    stored = JSON.parse(raw);
-  } catch {
-    // Corrupt or unreadable: start empty rather than fail to render.
-    return;
-  }
-
-  const saved = stored as { thread?: string; documents?: AttachedDocument[] };
-  // Belongs to a conversation that is no longer the current one, so announcing
-  // it would attach a document the thread never saw.
-  if (saved?.thread !== currentThread()) return;
-  if (!Array.isArray(saved.documents) || saved.documents.length === 0) return;
-
-  attached = saved.documents.filter((d) => d && typeof d.id === "string");
-  if (attached.length > 0) emit();
+export function setDocuments(documents: AttachedDocument[]): void {
+  // Reference equality is the store's change signal, so an unconditional
+  // assignment would re-render the thread on every chat switch that has no
+  // documents at either end - the common case.
+  if (attached.length === 0 && documents.length === 0) return;
+  attached = documents;
+  emit();
 }
 
 export function addDocument(document: UploadedDocument): void {
@@ -125,7 +79,6 @@ export function addDocument(document: UploadedDocument): void {
       message: document.message,
     },
   ];
-  persist();
   emit();
 }
 
@@ -136,51 +89,18 @@ export function setDocumentStatus(id: string, status: DocumentStatus): void {
   // would re-render the whole thread for nothing.
   if (!current || current.status === status) return;
   attached = attached.map((d) => (d.id === id ? { ...d, status } : d));
-  persist();
   emit();
 }
 
 export function clearDocuments(): void {
   if (attached.length === 0) return;
   attached = [];
-  persist();
   emit();
 }
 
 /** Stable reference between changes, as useSyncExternalStore requires. */
 export function getDocuments(): AttachedDocument[] {
   return attached;
-}
-
-/**
- * Empty the in-memory list without touching storage.
- *
- * Used when switching conversations (see switchDocumentsToThread), and by
- * tests to reproduce a page reload - a fresh module where localStorage still
- * holds what the previous load wrote. To *forget* documents, which is what
- * ending a conversation means, use clearDocuments().
- */
-export function clearDocumentsInMemoryOnly(): void {
-  attached = [];
-  emit();
-}
-
-/**
- * Re-point the store at whichever conversation the thread cookie now names.
- *
- * Call after the cookie has been rewritten. Dropping the in-memory list is the
- * part that matters: without it, a document attached in one chat would still
- * be announced in the next chat's system prompt, and the model would be told
- * it can search a document that conversation never saw.
- *
- * Storage holds one conversation's documents at a time, so switching away and
- * back does not restore them yet - the attachments themselves are still in
- * Postgres, only the association is lost. Scoping that per thread is the next
- * piece of work.
- */
-export function switchDocumentsToThread(): void {
-  clearDocumentsInMemoryOnly();
-  hydrateDocuments();
 }
 
 export function subscribe(listener: () => void): () => void {

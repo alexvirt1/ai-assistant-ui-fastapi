@@ -3,7 +3,7 @@
 import { AssistantRuntimeProvider, useEdgeRuntime } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react";
 import { makeMarkdownText } from "@assistant-ui/react-markdown";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 
@@ -11,7 +11,7 @@ import { remarkSections } from "@/lib/remarkSections";
 
 import type { AttachmentLimits } from "@/lib/attachments";
 import type { RestoredMessage } from "@/lib/chats";
-import { getDocuments, hydrateDocuments, subscribe } from "@/lib/documentStore";
+import { getDocuments, subscribe } from "@/lib/documentStore";
 
 import { DocumentChips } from "./attachments/DocumentChips";
 import { SectionCitation } from "./attachments/SectionCitation";
@@ -60,10 +60,6 @@ export function MyAssistant({
       }),
     [attachmentLimits?.maxChars, attachmentLimits?.maxBytes],
   );
-
-  // After mount, not during render: reading storage while rendering would make
-  // the first client render disagree with the server HTML.
-  useEffect(() => hydrateDocuments(), []);
 
   // Re-read on every change so a newly attached document is included from the
   // very next request onwards.

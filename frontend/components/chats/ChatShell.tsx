@@ -3,8 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { AttachmentLimits } from "@/lib/attachments";
-import { fetchChatMessages, type RestoredMessage } from "@/lib/chats";
-import { switchDocumentsToThread } from "@/lib/documentStore";
+import {
+  fetchChatDocuments,
+  fetchChatMessages,
+  type RestoredMessage,
+} from "@/lib/chats";
+import { setDocuments } from "@/lib/documentStore";
 import { newThreadId, readThreadCookie, setThreadCookie } from "@/lib/thread";
 
 import { MyAssistant } from "../MyAssistant";
@@ -34,9 +38,10 @@ export function ChatShell({
   const startNewChat = useCallback(() => {
     const id = newThreadId();
     setThreadCookie(id);
-    // The cookie has to be set first: the document store reads it to decide
-    // whose attachments these are.
-    switchDocumentsToThread();
+    // A new conversation has nothing attached. Without this, a document from
+    // the previous chat would still be announced in this one's system prompt,
+    // and the model told it can search something this conversation never saw.
+    setDocuments([]);
     setInitialMessages([]);
     setThreadId(id);
     setError(null);
@@ -46,11 +51,15 @@ export function ChatShell({
     async (id: string) => {
       if (id === threadId) return;
       try {
-        // Fetched before anything is mutated, so a failed load leaves the
-        // conversation you were reading exactly where it was.
-        const messages = await fetchChatMessages(id);
+        // Both fetched before anything is mutated, so a failed load leaves the
+        // conversation you were reading exactly where it was. In parallel
+        // because neither depends on the other.
+        const [messages, documents] = await Promise.all([
+          fetchChatMessages(id),
+          fetchChatDocuments(id),
+        ]);
         setThreadCookie(id);
-        switchDocumentsToThread();
+        setDocuments(documents);
         setInitialMessages(messages);
         setThreadId(id);
         setError(null);
@@ -77,9 +86,12 @@ export function ChatShell({
       return;
     }
 
-    fetchChatMessages(existing)
-      .then((messages) => {
+    Promise.all([fetchChatMessages(existing), fetchChatDocuments(existing)])
+      .then(([messages, documents]) => {
         if (cancelled) return;
+        // How attachments survive a reload now: asked for, not read back out
+        // of the browser.
+        setDocuments(documents);
         setInitialMessages(messages);
         setThreadId(existing);
       })

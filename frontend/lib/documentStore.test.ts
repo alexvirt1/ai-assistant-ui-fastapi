@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedDocument } from "./attachments";
 import {
   addDocument,
+  type AttachedDocument,
   clearDocuments,
-  clearDocumentsInMemoryOnly,
-  hydrateDocuments,
   getDocuments,
   setDocumentStatus,
+  setDocuments,
   subscribe,
 } from "./documentStore";
 
@@ -176,103 +176,48 @@ describe("documentStore", () => {
   });
 });
 
-describe("surviving a page reload", () => {
-  /**
-   * REGRESSION: the store was memory-only. The conversation comes back from
-   * Postgres on reload but the attachments did not, so an answer citing
-   * "[Section 148]" rendered as a dead link with nothing to resolve it against
-   * — and the backend stopped being told a document was attached at all.
-   */
-  const KEY = "assistant_attached_documents";
+describe("replacing the list on a chat switch", () => {
+  const attached = (overrides: Partial<AttachedDocument> = {}): AttachedDocument => ({
+    id: "doc-9",
+    name: "restored.txt",
+    sections: 12,
+    status: "ready",
+    tier: "consider_retrieval",
+    message: "12 chunks",
+    ...overrides,
+  });
 
   beforeEach(() => {
     clearDocuments();
-    window.localStorage.clear();
-    document.cookie = "assistant_thread_id=thread-1; Path=/";
   });
 
-  it("writes attached documents to storage", () => {
-    addDocument(uploaded());
-    expect(window.localStorage.getItem(KEY)).toContain("doc-1");
+  it("shows what the backend says this conversation has attached", () => {
+    setDocuments([attached()]);
+    expect(getDocuments()).toEqual([attached()]);
   });
 
-  it("restores them on the next load", () => {
+  it("drops the previous conversation's documents", () => {
+    // REGRESSION GUARD: left in place, they would be announced in the next
+    // chat's system prompt and the model told it can search a document that
+    // conversation never saw.
     addDocument(uploaded());
-    clearDocumentsInMemoryOnly();
-    hydrateDocuments();
-    expect(getDocuments()).toHaveLength(1);
-    expect(getDocuments()[0]!.name).toBe("big.txt");
-  });
-
-  it("restores the indexing status too", () => {
-    addDocument(uploaded());
-    setDocumentStatus("doc-1", "ready");
-    clearDocumentsInMemoryOnly();
-    hydrateDocuments();
-    expect(getDocuments()[0]!.status).toBe("ready");
-  });
-
-  it("ignores documents saved under a different conversation", () => {
-    // Otherwise a new thread would announce a document it never saw.
-    addDocument(uploaded());
-    clearDocumentsInMemoryOnly();
-    document.cookie = "assistant_thread_id=thread-2; Path=/";
-    hydrateDocuments();
+    setDocuments([]);
     expect(getDocuments()).toEqual([]);
   });
 
-  it("does not overwrite documents already in memory", () => {
-    // Storage must hold something *different*, or replacing memory with it is
-    // indistinguishable from leaving memory alone.
-    addDocument(uploaded({ id: "doc-live", name: "live.txt" }));
-    window.localStorage.setItem(
-      KEY,
-      JSON.stringify({
-        thread: "thread-1",
-        documents: [{ id: "doc-stale", name: "stale.txt", sections: 1, status: "ready" }],
-      }),
-    );
-
-    hydrateDocuments();
-
-    expect(getDocuments()).toHaveLength(1);
-    expect(getDocuments()[0]!.id).toBe("doc-live");
-  });
-
-  it("clearing removes them from storage", () => {
-    // "New chat" must not leave a document behind for the next conversation.
-    addDocument(uploaded());
-    clearDocuments();
-    expect(window.localStorage.getItem(KEY)).toBeNull();
-  });
-
-  it("survives corrupt storage", () => {
-    window.localStorage.setItem(KEY, "{not json");
-    expect(() => hydrateDocuments()).not.toThrow();
-    expect(getDocuments()).toEqual([]);
-  });
-
-  it("survives storage holding the wrong shape", () => {
-    window.localStorage.setItem(KEY, JSON.stringify({ thread: "thread-1", documents: "nope" }));
-    expect(() => hydrateDocuments()).not.toThrow();
-    expect(getDocuments()).toEqual([]);
-  });
-
-  it("notifies subscribers so the chips reappear", () => {
-    addDocument(uploaded());
-    clearDocumentsInMemoryOnly();
+  it("notifies so the chips repaint", () => {
     const listener = vi.fn();
     subscribe(listener);
-    hydrateDocuments();
+    setDocuments([attached()]);
     expect(listener).toHaveBeenCalled();
   });
 
-  it("does not throw when storage is unavailable", () => {
-    // Private browsing modes throw from setItem rather than returning.
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("QuotaExceededError");
-    });
-    expect(() => addDocument(uploaded())).not.toThrow();
-    setItem.mockRestore();
+  it("stays quiet when empty replaces empty", () => {
+    // The common case - switching between two chats with no attachments -
+    // must not re-render the whole thread.
+    const listener = vi.fn();
+    subscribe(listener);
+    setDocuments([]);
+    expect(listener).not.toHaveBeenCalled();
   });
 });

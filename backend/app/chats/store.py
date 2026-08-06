@@ -50,6 +50,19 @@ CREATE TABLE IF NOT EXISTS chat_threads (
 -- rebuilding the index.
 CREATE INDEX IF NOT EXISTS chat_threads_owner_recent_idx
     ON chat_threads (user_id, archived, updated_at DESC);
+
+-- Which documents a conversation can search.
+--
+-- No user_id of its own: ownership is inherited through thread_id, and a
+-- second copy of the owner is a second thing that can be wrong. Both foreign
+-- keys cascade - deleting a chat must not leave rows pointing at it, and a
+-- document removed from the corpus is no longer attached to anything.
+CREATE TABLE IF NOT EXISTS chat_thread_documents (
+    thread_id   TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (thread_id, document_id)
+);
 """
 
 # Trigram search over title+preview, scoped by owner in the same index.
@@ -121,7 +134,10 @@ def derive_title(text: str) -> str:
 
 
 async def setup() -> None:
-    """Create the table, indexes and search extensions if absent.
+    """Create the tables, indexes and search extensions if absent.
+
+    Runs after documents.store.setup(): chat_thread_documents has a foreign key
+    into `documents`, so that table has to exist first.
 
     A no-op without DATABASE_URL, matching how conversation persistence and
     document storage already degrade rather than failing startup.
@@ -346,6 +362,89 @@ async def update_thread(
         await conn.commit()
 
     return ChatThread(**row) if row else None
+
+
+async def attach_documents(thread_id: str, document_ids: list[str]) -> None:
+    """Record that these documents belong to this conversation.
+
+    Idempotent, and called on every turn with whatever the client says is
+    attached. The client is the only thing that knows a file was just uploaded,
+    but it must not be the only thing that remembers: a browser reload, or a
+    second tab, would otherwise leave a document reachable by nobody.
+
+    Ownership is not checked here - the caller has already established it via
+    claim_thread, and a foreign key means an id for a thread that does not
+    exist cannot be inserted anyway.
+    """
+    if not document_ids:
+        return
+
+    url = database_url()
+    if not url:
+        return
+
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.cursor().executemany(
+            "INSERT INTO chat_thread_documents (thread_id, document_id)"
+            " VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            [(thread_id, document_id) for document_id in document_ids],
+        )
+        await conn.commit()
+
+
+async def list_thread_documents(thread_id: str, user_id: str) -> list[dict]:
+    """The documents attached to a conversation, newest attachment last.
+
+    Serves two callers with one query: the chat route, which renders them into
+    the system prompt, and the sidebar, which draws a chip per document. They
+    read the same row, so the chips cannot disagree with what the model was
+    told is attached.
+
+    `indexed` is what the chip's status comes from. A document with no
+    retrieval chunks has not been embedded yet, which is not a failure - the
+    search tool indexes on demand - so the UI says it prepares on the first
+    question rather than claiming it is ready.
+    """
+    url = database_url()
+    if not url:
+        return []
+
+    async with await AsyncConnection.connect(url) as conn:
+        conn.row_factory = dict_row
+        rows = await (
+            await conn.execute(
+                "SELECT d.id, d.name, d.chunk_count, d.token_estimate,"
+                "       EXISTS (SELECT 1 FROM retrieval_chunks r"
+                "                WHERE r.document_id = d.id) AS indexed"
+                "  FROM chat_thread_documents ctd"
+                "  JOIN documents d ON d.id = ctd.document_id"
+                # Joined rather than trusted: the thread id arrives from the
+                # client, and this is what scopes the answer to its owner.
+                "  JOIN chat_threads t ON t.id = ctd.thread_id"
+                " WHERE ctd.thread_id = %s AND t.user_id = %s"
+                " ORDER BY ctd.attached_at",
+                (thread_id, user_id),
+            )
+        ).fetchall()
+
+    # Imported here rather than at module scope to keep the chat registry from
+    # importing the document pipeline just to be loaded.
+    from ..documents.scope import estimate_scope
+
+    documents = []
+    for row in rows:
+        scope = estimate_scope(row["token_estimate"], row["chunk_count"])
+        documents.append(
+            {
+                "id": str(row["id"]),
+                "name": row["name"],
+                "sections": row["chunk_count"],
+                "status": "ready" if row["indexed"] else "failed",
+                "tier": scope.tier.value,
+                "message": scope.message,
+            }
+        )
+    return documents
 
 
 async def delete_thread(thread_id: str, user_id: str) -> bool:
