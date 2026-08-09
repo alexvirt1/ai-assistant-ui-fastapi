@@ -18,8 +18,20 @@ def clean_env(monkeypatch):
     app.models.registry honours OLLAMA_MODEL, and app.tools.base honours
     ENABLED_TOOLS; if the ambient environment sets either, assertions about
     defaults would pass or fail depending on whose machine ran them.
+
+    DATABASE_URL is cleared for a stronger reason than tidiness: importing the
+    app calls load_dotenv(), so a developer's real .env would otherwise point
+    the chat registry at a live Postgres and these tests would start writing
+    rows to it.
     """
-    for var in ("OLLAMA_MODEL", "ENABLED_TOOLS", "MODELS_CONFIG", "REST_TOOLS_CONFIG"):
+    for var in (
+        "OLLAMA_MODEL",
+        "ENABLED_TOOLS",
+        "MODELS_CONFIG",
+        "REST_TOOLS_CONFIG",
+        "DATABASE_URL",
+        "SINGLE_USER_ID",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield
 

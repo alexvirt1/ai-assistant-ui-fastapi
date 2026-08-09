@@ -16,7 +16,12 @@ import {
   startIndexing,
   uploadDocument,
 } from "@/lib/attachments";
-import { addDocument, setDocumentStatus } from "@/lib/documentStore";
+import {
+  addDocument,
+  finishUpload,
+  setDocumentStatus,
+  startUpload,
+} from "@/lib/documentStore";
 
 /**
  * Routes an attached text file by size.
@@ -83,6 +88,13 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
 
     // Too large for the context window. Hand it to the document pipeline and
     // send the model a reference instead of the text.
+    //
+    // Announced before the fetch, not after it: the composer appends the
+    // message only once every attachment has been sent, so the seconds the
+    // backend spends storing and chunking a multi-megabyte file are seconds in
+    // which the UI shows nothing happening at all. Cleared in `finally` so the
+    // fallback path below takes the chip away too.
+    startUpload(attachment.id, attachment.name);
     try {
       const document = await uploadDocument(attachment.file);
       // Registered first, and before indexing finishes: every later request
@@ -106,6 +118,8 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
           `[Note: this document could not be uploaded for full-text search ` +
           `(${reason}); only its opening is shown above.]`,
       );
+    } finally {
+      finishUpload(attachment.id);
     }
   }
 

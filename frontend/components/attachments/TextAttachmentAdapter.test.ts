@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_ATTACHMENT_CHARS } from "@/lib/attachments";
-import { clearDocuments, getDocuments } from "@/lib/documentStore";
+import {
+  clearDocuments,
+  getDocuments,
+  getPendingUploads,
+} from "@/lib/documentStore";
 
 import { TextAttachmentAdapter } from "./TextAttachmentAdapter";
 
@@ -331,5 +335,98 @@ describe("TextAttachmentAdapter document registration", () => {
     await adapter.send(await adapter.add({ file }));
 
     expect(getDocuments()).toEqual([]);
+  });
+});
+
+describe("TextAttachmentAdapter upload progress", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearDocuments();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const uploadResponse = {
+    id: "doc-123",
+    name: "big.txt",
+    scope: { chunks: 87, tier: "consider_retrieval", message: "87 chunks" },
+  };
+
+  /** Upload is held open until the test releases it - the window this covers. */
+  function mockDeferredUpload(ok = true) {
+    let release!: () => void;
+    const uploaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/index")) return { ok: true, status: 200 } as Response;
+      await uploaded;
+      return {
+        ok,
+        status: ok ? 200 : 500,
+        json: async () => uploadResponse,
+        text: async () => "backend down",
+      } as Response;
+    }) as typeof fetch;
+    return release;
+  }
+
+  function sendBig(maxChars = 100) {
+    const adapter = new TextAttachmentAdapter({ maxChars });
+    const file = new File(["q".repeat(5000)], "big.txt", { type: "text/plain" });
+    return adapter.add({ file }).then((pending) => adapter.send(pending));
+  }
+
+  it("reports the file as uploading while the request is in flight", async () => {
+    // REGRESSION: nothing on screen changed between pressing send and the
+    // upload answering. For a multi-megabyte file that is seconds of apparent
+    // idleness, because the composer appends the message only after send().
+    const release = mockDeferredUpload();
+    const sent = sendBig();
+    // Long enough for send() to read the file and reach the held-open fetch.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getPendingUploads()).toMatchObject([{ name: "big.txt" }]);
+
+    release();
+    await sent;
+  });
+
+  it("stops reporting it once the upload succeeds", async () => {
+    const release = mockDeferredUpload();
+    const sent = sendBig();
+    release();
+    await sent;
+
+    // The document chip takes over from here.
+    expect(getPendingUploads()).toEqual([]);
+    expect(getDocuments()).toHaveLength(1);
+  });
+
+  it("stops reporting it when the upload fails", async () => {
+    // The fallback inlines a truncated copy; a chip left up would promise a
+    // searchable document that was never stored.
+    const release = mockDeferredUpload(false);
+    const sent = sendBig();
+    release();
+    await sent;
+
+    expect(getPendingUploads()).toEqual([]);
+    expect(getDocuments()).toEqual([]);
+  });
+
+  it("reports nothing for a file small enough to inline", async () => {
+    // No upload happens, so a chip would be reporting work that is not running.
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    const adapter = new TextAttachmentAdapter({ maxChars: 1000 });
+    const file = new File(["short"], "n.txt", { type: "text/plain" });
+
+    await adapter.send(await adapter.add({ file }));
+
+    expect(getPendingUploads()).toEqual([]);
   });
 });
