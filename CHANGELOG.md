@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-08
+
 **Multiple chats, part 1: the registry.** Conversations were already persisted
 per `thread_id` in the LangGraph checkpointer; what was missing was any notion
 of who owns one, what to call it, or when it last moved. A `chat_threads` table
