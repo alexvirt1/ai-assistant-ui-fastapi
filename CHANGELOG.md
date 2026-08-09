@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-08
+
+**Multiple chats, part 1: the registry.** Conversations were already persisted
+per `thread_id` in the LangGraph checkpointer; what was missing was any notion
+of who owns one, what to call it, or when it last moved. A `chat_threads` table
+now holds exactly that — and only that, so a conversation still has one copy and
+there is no dual write to drift. Threads are registered on their first turn and
+titled from the first non-blank line of the first prompt, truncated at a word
+boundary to 60 characters: a wrong-but-instant title beats a good one that
+appears after the answer. `GET /api/chats` lists and searches them, and
+`GET /api/chats/{id}/messages` replays a thread from the checkpoint into the
+shape assistant-ui restores from, folding each tool result into the call that
+produced it — emitted separately they render as a tool card that spins forever.
+Deleting a chat deletes its checkpoint rows too; dropping only the registry row
+would leave the transcript on disk, invisible and unreachable.
+
+Every row carries a `user_id` from the first commit, defaulting to `alice`,
+resolved through a single `current_user_id` dependency. Not decoration: the
+checkpointer will load any thread id handed to it, so before this the client
+could post a stranger's id and pull their transcript into the model's context.
+`/api/chat` now claims-or-verifies ownership before the graph runs. Verified by
+restarting under `SINGLE_USER_ID=bob`: the chat list came back empty, the other
+user's history 404'd, and a post to her thread id was refused with 403 before
+any model call. Adding real authentication is a change to that one function.
+
+Search is `ILIKE` over title and first message, with a `pg_trgm` + `btree_gin`
+composite index that both extensions create without superuser. Measured, the
+index answers `user_id = … AND … ILIKE …` in a single scan, but the planner
+prefers the plain owner btree while one user owns every row (seq scan at 2k
+rows, owner btree with a filter at 20k) — it is insurance for a long list, not
+a day-one win.
+
+**Multiple chats, part 2: the sidebar.** A panel down the left side lists past
+conversations, newest first, with "New chat" and a search box above them.
+Picking one loads its transcript into the main feed. The runtime this version
+of assistant-ui provides accepts `initialMessages` only at creation, so
+switching remounts it by `key` — deliberately chosen over upgrading to 0.14 for
+`useRemoteThreadListRuntime`, which would have replaced `useEdgeRuntime` and
+touched every component in `components/`. Switching and "New chat" are disabled
+while a response streams, since remounting mid-run would silently discard the
+answer being written. The list refetches when a run starts, so a new chat
+appears while it is being answered, and again when it ends, to pick up the
+title the backend derived; if the first refetch races registration and misses,
+the second corrects it. Search is server-side and debounced, with in-flight
+requests aborted — filtering the loaded page client-side would silently search
+only the most recent page, and without cancellation a slow early response can
+land after a fast later one and repaint the list for a prefix already typed
+past.
+
+**Fixed: an empty assistant bubble above every restored answer that used a
+tool.** A ReAct turn is stored as `AIMessage(tool_calls)` → `ToolMessage` →
+`AIMessage(text)`, and the replay emitted one message per `AIMessage`. Live,
+that turn is a single message with parts appended to it; restored, the
+tool-calling half became its own bubble — and since a completed tool call
+deliberately renders nothing (the running indicator is meant to disappear), the
+bubble arrived with an avatar and no content. Everything the assistant produced
+between two user turns is now one message, however many times the loop went
+round, and a turn with no text at all — a run cancelled between the tool result
+and the answer — is dropped rather than shown blank. Confirmed against a live
+two-turn conversation that had produced two such bubbles: it now replays as
+four messages, each turn a single `[tool-call, text]`.
+
+**Multiple chats, part 3: documents belong to a conversation.** A
+`chat_thread_documents` table records which documents a chat can search, with
+no `user_id` of its own — ownership is inherited through the thread, and a
+second copy of the owner is a second thing that can be wrong. The client still
+sends its list on every turn, because it is the only thing that knows a file
+was just uploaded, but it is no longer the only thing that remembers: the
+backend attaches what it is told, then renders the system-prompt block from the
+database. Verified end to end — a second turn whose request carried no
+`documents` field at all still answered from the attached specification, where
+before the reference would simply have been absent.
+
+That also removes the localStorage mirror added in 1.3.0. It existed because
+the conversation came back from Postgres on reload while attachments did not;
+the association is in Postgres now, and a browser-side copy of an authoritative
+server list is one more thing that can silently disagree with it. Opening a
+chat fetches its documents the same way it fetches its transcript, so switching
+away and back restores the chips — which single-slot storage could not do —
+and a chat opened in a second browser sees them too. Deleting a chat drops its
+associations by cascade and leaves the documents themselves in the corpus.
+
+Thread ids are now minted in the browser, because the sidebar needs the id
+before the first message is sent. `crypto.randomUUID` is not available outside
+a secure context and this app is served over plain http on a LAN address, where
+it is undefined — so "New chat" would have thrown on the real deployment while
+working on localhost. The fallback builds a v4 id from `crypto.getRandomValues`,
+which carries no such restriction. Switching chats also drops the in-memory
+document list: leaving it would announce a document in the next conversation's
+system prompt that the conversation never saw. Both proxies now forward `cookie`
+and `authorization` upstream — inert with no login, present so that adding one
+is a backend change rather than a hunt for where the credential was dropped —
+and all three read the backend address from `BACKEND_URL`.
+
+**A large attachment now says it is uploading.** The chips added in 1.3.0 cover
+indexing, which is the minute *after* a document exists — they could not cover
+the seconds before it, because until the upload answers there is no document to
+make a chip from. That window was invisible and it is the one the user is
+actually waiting in: the composer appends the message only once every attachment
+has been sent, so pressing send on a multi-megabyte file left the text sitting
+in the composer with no chip, no message and no running indicator anywhere on
+screen. The adapter now registers the file with the document store before the
+request goes out and clears it in a `finally`, so the chip reads
+`name · uploading…` from the moment send is pressed, becomes
+`name · N sections · preparing…` when the upload answers, and disappears
+entirely if the upload failed and the fallback inlined a truncated copy instead.
+Uploads in flight are a separate slice of the store rather than a fourth
+document status: `getDocuments()` is what the runtime sends to the backend, and
+a file with no id yet is not something the model can be told to search.
+
 ## [1.3.0] - 2026-08-05
 
 Attachments, end to end: a file dropped into the composer becomes a searchable

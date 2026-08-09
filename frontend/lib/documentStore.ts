@@ -1,7 +1,6 @@
 "use client";
 
 import type { UploadedDocument } from "./attachments";
-import { THREAD_COOKIE } from "./thread";
 
 /**
  * Documents attached to the current conversation.
@@ -40,7 +39,23 @@ export type AttachedDocument = {
   message: string;
 };
 
+/**
+ * A file on its way to the document pipeline.
+ *
+ * Deliberately separate from the attached list rather than a fourth
+ * DocumentStatus: getDocuments() is what the runtime sends to the backend as
+ * the documents the model may search, and a file still in flight has no id to
+ * search by. Keeping it out of that list is what stops the model being told
+ * about a document the backend has not stored yet.
+ */
+export type PendingUpload = {
+  /** The composer attachment's id - the document id does not exist yet. */
+  id: string;
+  name: string;
+};
+
 let attached: AttachedDocument[] = [];
+let uploading: PendingUpload[] = [];
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -48,72 +63,23 @@ function emit() {
 }
 
 /**
- * Where attached documents survive a page reload.
+ * Replace the list wholesale - what a conversation has attached, as the
+ * backend knows it.
  *
- * They have to. The conversation lives in Postgres and comes back on reload,
- * but this store was memory-only — so after a refresh the thread still showed
- * an answer citing "[Section 148]" while nothing knew which document that was,
- * and the backend stopped being told a document was attached at all, losing the
- * pinned system-prompt block that makes it searchable.
- *
- * Keyed by thread id so a different conversation never inherits them. The
- * thread cookie is deliberately not httpOnly, so it is readable here.
+ * This is where the list comes from now. It used to be mirrored into
+ * localStorage so a reload could restore it, but the association lives in
+ * Postgres as of chat_thread_documents, and a browser-side copy of an
+ * authoritative server list is one more thing that can silently disagree with
+ * it. A reload now restores documents the same way it restores the
+ * conversation: by asking the backend.
  */
-const STORAGE_KEY = "assistant_attached_documents";
-
-function currentThread(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(
-    new RegExp(`(?:^|; )${THREAD_COOKIE}=([^;]*)`),
-  );
-  return match ? decodeURIComponent(match[1]!) : "";
-}
-
-function persist(): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (attached.length === 0) {
-      window.localStorage.removeItem(STORAGE_KEY);
-      return;
-    }
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ thread: currentThread(), documents: attached }),
-    );
-  } catch {
-    // Full quota or a privacy mode that forbids storage. Losing persistence is
-    // a degraded experience; throwing here would break attaching a file.
-  }
-}
-
-/**
- * Restore documents saved by an earlier page load.
- *
- * Called from an effect rather than at module scope on purpose: reading storage
- * during import would make the first client render disagree with the
- * server-rendered HTML, which is a hydration error. Same reason ThemeToggle
- * guards on mount.
- */
-export function hydrateDocuments(): void {
-  if (typeof window === "undefined" || attached.length > 0) return;
-  let stored: unknown;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    stored = JSON.parse(raw);
-  } catch {
-    // Corrupt or unreadable: start empty rather than fail to render.
-    return;
-  }
-
-  const saved = stored as { thread?: string; documents?: AttachedDocument[] };
-  // Belongs to a conversation that is no longer the current one, so announcing
-  // it would attach a document the thread never saw.
-  if (saved?.thread !== currentThread()) return;
-  if (!Array.isArray(saved.documents) || saved.documents.length === 0) return;
-
-  attached = saved.documents.filter((d) => d && typeof d.id === "string");
-  if (attached.length > 0) emit();
+export function setDocuments(documents: AttachedDocument[]): void {
+  // Reference equality is the store's change signal, so an unconditional
+  // assignment would re-render the thread on every chat switch that has no
+  // documents at either end - the common case.
+  if (attached.length === 0 && documents.length === 0) return;
+  attached = documents;
+  emit();
 }
 
 export function addDocument(document: UploadedDocument): void {
@@ -129,7 +95,6 @@ export function addDocument(document: UploadedDocument): void {
       message: document.message,
     },
   ];
-  persist();
   emit();
 }
 
@@ -140,32 +105,47 @@ export function setDocumentStatus(id: string, status: DocumentStatus): void {
   // would re-render the whole thread for nothing.
   if (!current || current.status === status) return;
   attached = attached.map((d) => (d.id === id ? { ...d, status } : d));
-  persist();
   emit();
 }
 
+/**
+ * Announce that a file is being uploaded.
+ *
+ * The upload is the one step of the attachment path with nothing to show for
+ * itself: the composer holds the message until every attachment has been sent,
+ * so between pressing send and the backend answering there is no chip, no
+ * message and no running indicator anywhere on screen. This is that missing
+ * acknowledgement, and it is the store's job because the adapter that does the
+ * uploading lives outside the component tree.
+ */
+export function startUpload(id: string, name: string): void {
+  if (uploading.some((u) => u.id === id)) return;
+  uploading = [...uploading, { id, name }];
+  emit();
+}
+
+/** Upload settled - succeeded, failed, or fell back to inline text. */
+export function finishUpload(id: string): void {
+  if (!uploading.some((u) => u.id === id)) return;
+  uploading = uploading.filter((u) => u.id !== id);
+  emit();
+}
+
+/** Stable reference between changes, as useSyncExternalStore requires. */
+export function getPendingUploads(): PendingUpload[] {
+  return uploading;
+}
+
 export function clearDocuments(): void {
-  if (attached.length === 0) return;
+  if (attached.length === 0 && uploading.length === 0) return;
   attached = [];
-  persist();
+  uploading = [];
   emit();
 }
 
 /** Stable reference between changes, as useSyncExternalStore requires. */
 export function getDocuments(): AttachedDocument[] {
   return attached;
-}
-
-/**
- * Empty the in-memory list without touching storage.
- *
- * Exists for tests: it reproduces a page reload, where the module is fresh but
- * localStorage still holds what the previous load wrote. Production code should
- * use clearDocuments(), which also forgets them.
- */
-export function clearDocumentsInMemoryOnly(): void {
-  attached = [];
-  emit();
 }
 
 export function subscribe(listener: () => void): () => void {

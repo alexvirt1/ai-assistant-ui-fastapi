@@ -5,6 +5,10 @@ import { THREAD_COOKIE } from "@/lib/thread";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Shared with the documents and chats proxies rather than hardcoded here, so
+// moving the backend is one env var instead of four edits.
+const BACKEND = process.env.BACKEND_URL ?? "http://127.0.0.1:8000";
+
 export async function POST(req: Request) {
   const body = await req.json();
   const cookieStore = await cookies();
@@ -18,12 +22,21 @@ export async function POST(req: Request) {
     threadId = crypto.randomUUID();
   }
 
-  const upstream = await fetch("http://127.0.0.1:8000/api/chat", {
+  const headersOut = new Headers({
+    "Content-Type": "application/json",
+    Accept: req.headers.get("accept") ?? "text/event-stream",
+  });
+  // Inert until there is a login to carry: forwarded now so that adding one is
+  // a backend change rather than also a hunt for where the credential was
+  // being dropped. See app/api/chats/[[...path]]/route.ts.
+  const cookie = req.headers.get("cookie");
+  if (cookie) headersOut.set("cookie", cookie);
+  const authorization = req.headers.get("authorization");
+  if (authorization) headersOut.set("authorization", authorization);
+
+  const upstream = await fetch(`${BACKEND}/api/chat`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: req.headers.get("accept") ?? "text/event-stream",
-    },
+    headers: headersOut,
     body: JSON.stringify({
       ...body,
       threadId,
