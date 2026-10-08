@@ -17,6 +17,7 @@ import { DocumentChips } from "./attachments/DocumentChips";
 import { SectionCitation } from "./attachments/SectionCitation";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { ThreadActivity } from "./chats/ThreadActivity";
+import { ModelPicker } from "./models/ModelPicker";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   ToolExecutionIndicators,
@@ -95,6 +96,7 @@ export function MyAssistant({
               chips and DocumentChips renders nothing. "New chat" lives in the
               sidebar now, next to the list it adds to. */}
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            <ModelPicker />
             <ThemeToggle />
           </div>
         </header>
