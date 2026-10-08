@@ -41,7 +41,34 @@ async def list_available() -> list[str]:
             data = resp.json()
     except (httpx.HTTPError, ValueError):
         return []
-    return sorted(m["name"] for m in data.get("models", []))
+    # A set first: the VM has been seen listing the same tag twice.
+    return sorted({m["name"] for m in data.get("models", [])})
+
+
+# Capabilities of a tag do not change while it exists, and the model picker
+# asks for every tag at once, so a successful answer is kept for the process.
+_CAPABILITIES: dict[str, frozenset[str]] = {}
+
+
+async def capabilities(tag: str) -> frozenset[str]:
+    """What a tag can do, from /api/show: "completion", "tools", "embedding"...
+
+    Empty when the VM is unreachable or too old to report them - callers treat
+    empty as "unknown", not as "can do nothing".
+    """
+    if tag in _CAPABILITIES:
+        return _CAPABILITIES[tag]
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(f"{BASE_URL}/api/show", json={"model": tag})
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return frozenset()
+    found = frozenset(data.get("capabilities") or ())
+    if found:
+        _CAPABILITIES[tag] = found
+    return found
 
 
 async def resident() -> list[ResidentModel]:

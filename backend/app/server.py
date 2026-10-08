@@ -12,6 +12,7 @@ from .chats.routes import make_chats_router
 from .documents import store as document_store
 from .documents.routes import router as documents_router
 from .langgraph.agent import build_graph
+from .models.routes import router as models_router
 from .tools.mcp.loader import connect_mcp_servers
 
 load_dotenv()
@@ -66,6 +67,7 @@ app.add_middleware(
 # Registered at import rather than in the lifespan: unlike /api/chat, these
 # routes do not depend on the graph.
 app.include_router(documents_router)
+app.include_router(models_router)
 
 if __name__ == "__main__":
     import uvicorn

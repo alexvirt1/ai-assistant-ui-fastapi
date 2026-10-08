@@ -13,6 +13,7 @@ from langgraph.prebuilt.chat_agent_executor import AgentState
 
 from ..documents.chunker import count_message_tokens
 from ..models import DEFAULT_ROLE, make_chat_model
+from ..models.selection import current_tag
 from ..tools import compose_prompt, get_enabled_specs
 
 load_dotenv()
@@ -26,6 +27,25 @@ def make_model(role: str = DEFAULT_ROLE):
     apart from an explicit keep_alive; OLLAMA_MODEL still overrides it.
     """
     return make_chat_model(role)
+
+
+def make_model_selector(tools: list):
+    """The agent's model, re-resolved on every step from the selection.
+
+    A callable rather than a model so a switch takes effect on the next model
+    call without rebuilding the graph - including mid-turn, right after the
+    switch_model tool returns. Bound models are cached per tag, since binding
+    the tool schemas on every step would be repeated work.
+    """
+    bound = {}
+
+    def select_model(state, runtime):
+        tag = current_tag()
+        if tag not in bound:
+            bound[tag] = make_chat_model(DEFAULT_ROLE, model=tag).bind_tools(tools)
+        return bound[tag]
+
+    return select_model
 
 
 BASE_PROMPT = (
@@ -218,9 +238,10 @@ def make_prompt(system_prompt: str):
 
 def build_graph(checkpointer=None):
     specs = get_enabled_specs()
+    tools = [spec.tool for spec in specs]
     return create_react_agent(
-        model=make_model(),
-        tools=[spec.tool for spec in specs],
+        model=make_model_selector(tools),
+        tools=tools,
         prompt=make_prompt(compose_prompt(BASE_PROMPT, specs)),
         state_schema=DocumentAwareState,
         checkpointer=checkpointer,
