@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-07
+
+**Choosing the chat model.** The agent used to run on whatever the `fast` role
+(or `OLLAMA_MODEL`) named at startup; changing it meant editing `.env` and
+restarting. Now the model can be checked, listed and switched while the app
+runs, from a picker in the chat header or by asking in the conversation. The
+agent gained three tools: `current_model`, `list_models` and `switch_model`.
+`switch_model` accepts an exact tag, a role name (`deep`, `code`), an
+unambiguous prefix (`gemma4`), or `default`. The picker shows the current model
+without touching the VM, fetches the list only when opened, marks the model
+already resident so a cold load can be avoided, and refetches after every run so
+a switch made in chat shows up in the header. `GET /api/models`,
+`GET /api/models/current` and `PUT /api/models/current` back both.
+
+The selection is global and in memory, not per chat: the VM serves one model at
+a time, so two chats on different models would evict each other on every turn.
+A restart returns to the default. Only the chat agent follows it - document
+jobs keep their roles, so a summary pipeline cannot change model halfway
+because someone switched in a chat. The graph now resolves its model on every
+step instead of binding one at build time, so a switch needs no restart and the
+reply to the switching turn already comes from the new model.
+
+Not every tag on the VM can run the agent. Capabilities come from Ollama's
+`/api/show` and are cached per tag: embedding models (`bge-m3`,
+`nomic-embed-text`, `qwen3-embedding`) are left out of the list, and a model
+without tool support (`qwen2.5vl:7b`) is listed but cannot be selected, since
+the agent binds its tools on every call and such a model would fail every
+turn. An Ollama too old to report capabilities blocks nothing. An unreachable VM
+refuses the switch rather than making it blind.
+
+**Fixed: a tag listed twice by the VM appeared twice.** `/api/tags` was seen
+returning `qwen3.6:35b-a3b-q4_K_M` twice; `list_available()` now de-duplicates.
+
 ## [1.4.0] - 2026-08-08
 
 **Multiple chats, part 1: the registry.** Conversations were already persisted
