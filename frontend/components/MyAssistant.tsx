@@ -2,38 +2,22 @@
 
 import { AssistantRuntimeProvider, useEdgeRuntime } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react";
-import { makeMarkdownText } from "@assistant-ui/react-markdown";
 import { useMemo, useSyncExternalStore } from "react";
-import rehypeKatex from "rehype-katex";
-import remarkMath from "remark-math";
-
-import { remarkSections } from "@/lib/remarkSections";
 
 import type { AttachmentLimits } from "@/lib/attachments";
 import type { RestoredMessage } from "@/lib/chats";
 import { getDocuments, subscribe } from "@/lib/documentStore";
 
 import { DocumentChips } from "./attachments/DocumentChips";
-import { SectionCitation } from "./attachments/SectionCitation";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { ThreadActivity } from "./chats/ThreadActivity";
+import { MarkdownText } from "./MarkdownText";
 import { ModelPicker } from "./models/ModelPicker";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   ToolExecutionIndicators,
   ToolRunningFallback,
 } from "./tools/ToolExecutionIndicators";
-
-// remarkMath parses $...$ (inline) and $$...$$ (display) math; rehypeKatex
-// renders it. KaTeX emits markup only, so katex.min.css is imported once in
-// app/layout.tsx — without it the math renders unstyled.
-const MarkdownText = makeMarkdownText({
-  // remarkSections rewrites "[Section 148]" into a link with a section: URL,
-  // which the `a` override below renders as an openable citation.
-  remarkPlugins: [remarkMath, remarkSections],
-  rehypePlugins: [rehypeKatex],
-  components: { a: SectionCitation },
-});
 
 export function MyAssistant({
   threadId,
