@@ -9,6 +9,7 @@ import remarkMath from "remark-math";
 import { remarkSections } from "@/lib/remarkSections";
 
 import { SectionCitation } from "./attachments/SectionCitation";
+import { MermaidDiagram, NoCodeHeader } from "./MermaidDiagram";
 
 /**
  * A table that scrolls sideways instead of widening the message.
@@ -53,4 +54,9 @@ export const MarkdownText = makeMarkdownText({
   remarkPlugins: [[remarkGfm, { singleTilde: false }], remarkMath, remarkSections],
   rehypePlugins: [rehypeKatex],
   components: { a: SectionCitation, table: MarkdownTable },
+  // ```mermaid fences are drawn as diagrams; every other language keeps the
+  // default code block.
+  componentsByLanguage: {
+    mermaid: { SyntaxHighlighter: MermaidDiagram, CodeHeader: NoCodeHeader },
+  },
 });

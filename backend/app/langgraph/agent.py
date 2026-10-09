@@ -54,7 +54,14 @@ BASE_PROMPT = (
     # $$...$$ only. Left to itself the model often emits \\(...\\) or \\[...\\],
     # which would show up as literal backslashes.
     "Write any mathematics as LaTeX: $...$ for inline math and $$...$$ on its "
-    "own lines for displayed equations. Do not use \\( \\) or \\[ \\]."
+    "own lines for displayed equations. Do not use \\( \\) or \\[ \\]. "
+    # The frontend draws ```mermaid fences as diagrams (MermaidDiagram.tsx).
+    # Without this the model answers "draw a flowchart" with ASCII art or a
+    # list of steps. Worded as "when asked or clearly useful" so it does not
+    # start decorating every answer with a diagram.
+    "When the user asks for a diagram, flowchart, sequence, or other chart, or "
+    "one would clearly help, draw it in a ```mermaid code block; the chat "
+    "renders it as a diagram."
 )
 
 # Token budget for conversation history handed to the model, excluding the

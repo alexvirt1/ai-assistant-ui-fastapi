@@ -321,6 +321,10 @@ ownership check as `/messages`, so another user's chat is a 404.
 curl -OJ http://127.0.0.1:8000/api/chats/$THREAD/export.pdf   # saves "<title>.pdf"
 ```
 
+`POST` to the same path exports with Mermaid diagrams, which the backend has
+no way to draw: the frontend draws them and sends
+`{"diagrams": [{"source", "png" (base64), "width", "height" (CSS px)}]}`.
+
 - **Answers** are parsed with markdown-it-py plus GFM tables, strikethrough and
   `$` math, matching the chat's remark-gfm and remark-math, then adapted to
   what fpdf2 can lay out (`_prepare_tables`, `_tighten_lists` in `export.py`).
@@ -328,6 +332,10 @@ curl -OJ http://127.0.0.1:8000/api/chats/$THREAD/export.pdf   # saves "<title>.p
   an SVG and placed centred. Inline math is converted to text via
   latex2mathml, because fpdf2 cannot put an image inside a line. Malformed
   LaTeX shows its source.
+- **Mermaid**: a top-level ```` ```mermaid ```` block whose trimmed source
+  matches a posted diagram is replaced by its PNG, centred and shrunk to the
+  page width or one page. Otherwise, including every `GET`, it stays a code
+  block. Uploads must be PNGs (checked with Pillow), at most 40 per request.
 - **Left out on purpose**: tool results (a search returns ~11 000 tokens),
   attached file contents (named on one line instead), and images (alt text
   only, because fpdf2 would fetch the URL itself).

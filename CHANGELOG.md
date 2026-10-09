@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-09
+
+**Mermaid diagrams in answers.** A ```` ```mermaid ```` block is drawn as a
+diagram once its closing fence arrives. While it streams the source is shown,
+since Mermaid would fail on (or draw) every partial diagram. A diagram that
+will not parse shows its source and the reason. Mermaid is loaded on first
+use, being by far the largest dependency, and diagrams are drawn one at a time
+because its configuration is global. It runs with `securityLevel: "strict"`,
+since the diagram is model output, and follows the light/dark theme. Each
+diagram has Show code and Copy, and a click opens it filling the window;
+Escape, Close or a click outside closes it. The system prompt now tells the
+model the chat renders these blocks, so a request for a flowchart gets one
+rather than ASCII art.
+
+**Diagrams in the PDF export.** The backend has no browser to draw Mermaid
+with, so the Export PDF button draws the chat's diagrams as PNGs (light theme,
+3x for print, without HTML labels, which a canvas cannot export) and posts
+them to the new `POST /api/chats/{id}/export.pdf`. Each image replaces the
+top-level block with the same source, centred and shrunk to fit the page. A
+block without an image, a diagram inside a list, and the existing `GET` all
+show the source as before. Uploads must be PNGs, at most 40 per request. The
+Next.js `/api/chats` proxy now forwards `POST`.
+
+**Upgrading.** New frontend dependency: `mermaid`. No new backend dependencies
+(Pillow comes with fpdf2). Restart the backend before deploying the frontend:
+an older backend answers the new export request with 405.
+
 ## [1.7.0] - 2026-10-09
 
 **Tables in answers.** Models answer comparisons as pipe tables, which plain
