@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 from .add_langgraph_route import add_langgraph_route
 from .chats import store as chat_store
@@ -17,21 +19,44 @@ from .tools.mcp.loader import connect_mcp_servers
 
 load_dotenv()
 
-checkpointer_cm = None
+checkpointer_pool = None
 checkpointer = None
+
+
+def make_checkpointer_pool(database_url: str) -> AsyncConnectionPool:
+    """Connections for the checkpointer, checked before each use.
+
+    Not AsyncPostgresSaver.from_conn_string: that holds one connection for the
+    life of the process and never reopens it. Seen live when unattended-upgrades
+    restarted PostgreSQL - the connection was terminated, and every chat turn
+    after that failed with "the connection is closed" until the backend was
+    restarted. The pool's check replaces a dead connection with a new one.
+
+    The connection settings are the ones from_conn_string uses, which the saver
+    relies on: autocommit for its writes, no prepared statements, dict rows.
+    """
+    return AsyncConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=int(os.getenv("CHECKPOINTER_POOL_SIZE", "5")),
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        check=AsyncConnectionPool.check_connection,
+        open=False,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global checkpointer_cm, checkpointer
+    global checkpointer_pool, checkpointer
 
     # Register tools from configured MCP servers before the graph is built.
     await connect_mcp_servers()
 
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
-        checkpointer_cm = AsyncPostgresSaver.from_conn_string(database_url)
-        checkpointer = await checkpointer_cm.__aenter__()
+        checkpointer_pool = make_checkpointer_pool(database_url)
+        await checkpointer_pool.open(wait=True)
+        checkpointer = AsyncPostgresSaver(conn=checkpointer_pool)
         await checkpointer.setup()
         graph = build_graph(checkpointer=checkpointer)
     else:
@@ -50,8 +75,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if checkpointer_cm is not None:
-            await checkpointer_cm.__aexit__(None, None, None)
+        if checkpointer_pool is not None:
+            await checkpointer_pool.close()
 
 
 app = FastAPI(lifespan=lifespan)

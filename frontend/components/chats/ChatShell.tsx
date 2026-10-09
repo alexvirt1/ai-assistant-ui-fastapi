@@ -106,6 +106,15 @@ export function ChatShell({
     };
   }, [startNewChat]);
 
+  // Deleting the chat on screen leaves nothing to continue: its transcript is
+  // gone, and the next turn would quietly recreate it under the old id.
+  const handleDeleted = useCallback(
+    (ids: string[]) => {
+      if (threadId && ids.includes(threadId)) startNewChat();
+    },
+    [threadId, startNewChat],
+  );
+
   const handleRunningChange = useCallback((running: boolean) => {
     setIsRunning(running);
     // Refetched on both edges. On start, so a brand-new chat appears in the
@@ -123,6 +132,7 @@ export function ChatShell({
         disabled={isRunning}
         onSelect={openChat}
         onNew={startNewChat}
+        onDeleted={handleDeleted}
       />
       {/* flex-col + min-h-0 so the banner takes its own height and the thread
           below it scrolls, rather than the column growing past the viewport. */}
