@@ -10,6 +10,7 @@ import { getDocuments, subscribe } from "@/lib/documentStore";
 
 import { DocumentChips } from "./attachments/DocumentChips";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
+import { ExportPdfButton } from "./chats/ExportPdfButton";
 import { ThreadActivity } from "./chats/ThreadActivity";
 import { MarkdownText } from "./MarkdownText";
 import { ModelPicker } from "./models/ModelPicker";
@@ -80,6 +81,7 @@ export function MyAssistant({
               chips and DocumentChips renders nothing. "New chat" lives in the
               sidebar now, next to the list it adds to. */}
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            {threadId ? <ExportPdfButton threadId={threadId} /> : null}
             <ModelPicker />
             <ThemeToggle />
           </div>
