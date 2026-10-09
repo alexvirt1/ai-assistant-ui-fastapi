@@ -15,6 +15,7 @@ Kept free of FastAPI so it can be tested without it.
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from io import BytesIO
@@ -60,6 +61,27 @@ MUTED = "#6b7280"
 # Display math is set a little larger than the text around it, as KaTeX does.
 MATH_SIZE = 12.5
 PT_TO_MM = 25.4 / 72
+# A CSS pixel, the unit a diagram's size arrives in.
+PX_TO_MM = 25.4 / 96
+
+
+@dataclass(frozen=True)
+class Diagram:
+    """A Mermaid diagram the browser drew, to stand in for its source.
+
+    The backend has nothing to draw Mermaid with - it is JavaScript and needs a
+    browser to lay out text - so the frontend sends each diagram as a PNG,
+    keyed by its source, and the size it shows at on screen.
+    """
+
+    png: bytes
+    width_px: float
+    height_px: float
+
+
+def diagram_key(source: str) -> str:
+    """How a ```mermaid block is matched to its image: the text, trimmed."""
+    return source.strip()
 
 # fpdf2's defaults colour headings dark red and bullets bright red; these match
 # the chat instead. Sizes are stepped down because an answer's "# Heading" is a
@@ -193,14 +215,28 @@ def _parser() -> MarkdownIt:
     return md
 
 
-def _blocks(text: str) -> list[str | tuple[str, str]]:
-    """An answer split into HTML runs and top-level display math.
+def _is_diagram(token: Token, diagrams: dict[str, Diagram]) -> bool:
+    language = token.info.strip().split(maxsplit=1)
+    return (
+        token.type == "fence"
+        and language[:1] == ["mermaid"]
+        and diagram_key(token.content) in diagrams
+    )
+
+
+def _blocks(
+    text: str, diagrams: dict[str, Diagram] | None = None
+) -> list[str | tuple[str, str]]:
+    """An answer split into HTML runs, top-level display math and diagrams.
 
     Display math is typeset as an image, which write_html cannot place, so the
     answer is cut around each formula: HTML before it, the formula, HTML
     after. Only top-level formulas are cut out; one inside a list or a quote
     stays in the HTML as centred text rather than breaking the list in two.
+    A top-level ```mermaid block with an image in `diagrams` is cut out the
+    same way; one without stays a code block, showing its source.
     """
+    diagrams = diagrams or {}
     md = _parser()
     tokens = md.parse(text)
     _prepare_tables(tokens)
@@ -214,6 +250,11 @@ def _blocks(text: str) -> list[str | tuple[str, str]]:
                 blocks.append(md.renderer.render(run, md.options, {}))
                 run = []
             blocks.append(("math", token.content))
+        elif token.level == 0 and _is_diagram(token, diagrams):
+            if run:
+                blocks.append(md.renderer.render(run, md.options, {}))
+                run = []
+            blocks.append(("diagram", diagram_key(token.content)))
         else:
             run.append(token)
     if run:
@@ -289,7 +330,25 @@ def _display_math(pdf: _ChatPDF, tex: str) -> None:
     pdf.set_xy(pdf.l_margin, y + height + gap)
 
 
-def _rich(pdf: _ChatPDF, text: str) -> None:
+def _diagram(pdf: _ChatPDF, diagram: Diagram) -> None:
+    """A diagram, centred, at its on-screen size if it fits the page."""
+    width = diagram.width_px * PX_TO_MM
+    height = diagram.height_px * PX_TO_MM
+    # Shrunk to the text width, then to a page: a tall flowchart split across
+    # pages would be unreadable, and pdf.image cannot split it anyway.
+    scale = min(1.0, pdf.epw / width, (pdf.eph - 4) / height)
+    width, height = width * scale, height * scale
+    gap = 2
+    if pdf.get_y() + gap + height > pdf.page_break_trigger:
+        pdf.add_page()
+    y = pdf.get_y() + gap
+    pdf.image(
+        BytesIO(diagram.png), x=pdf.l_margin + (pdf.epw - width) / 2, y=y, w=width, h=height
+    )
+    pdf.set_xy(pdf.l_margin, y + height + gap)
+
+
+def _rich(pdf: _ChatPDF, text: str, diagrams: dict[str, Diagram] | None = None) -> None:
     """An answer's markdown, falling back to plain text if it will not render.
 
     The export must not fail because one answer contains a construct fpdf2's
@@ -298,9 +357,13 @@ def _rich(pdf: _ChatPDF, text: str) -> None:
     than no PDF at all.
     """
     try:
-        for block in _blocks(text):
+        for block in _blocks(text, diagrams):
             if isinstance(block, tuple):
-                _display_math(pdf, block[1])
+                kind, content = block
+                if kind == "diagram":
+                    _diagram(pdf, diagrams[content])
+                else:
+                    _display_math(pdf, content)
                 continue
             pdf.write_html(
                 block,
@@ -354,11 +417,15 @@ def _tool_line(pdf: _ChatPDF, names: list[str]) -> None:
 
 
 def render_chat_pdf(
-    title: str, messages: list[dict], exported_at: datetime | None = None
+    title: str,
+    messages: list[dict],
+    exported_at: datetime | None = None,
+    diagrams: dict[str, Diagram] | None = None,
 ) -> bytes:
     """The conversation as PDF bytes.
 
-    `messages` is to_core_messages output. Tool calls are named but their
+    `messages` is to_core_messages output. `diagrams` are images for ```mermaid
+    blocks, keyed by diagram_key(source); a block without one shows its source. Tool calls are named but their
     arguments and results are left out: a document search returns ~11 000
     tokens of passages, which would bury the conversation it was part of.
     """
@@ -408,7 +475,7 @@ def render_chat_pdf(
                 _tool_line(pdf, tools)
                 tools = []
             if part.get("type") == "text" and part.get("text", "").strip():
-                _rich(pdf, part["text"])
+                _rich(pdf, part["text"], diagrams)
         if tools:
             _tool_line(pdf, tools)
 

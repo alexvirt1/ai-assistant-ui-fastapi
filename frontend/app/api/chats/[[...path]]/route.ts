@@ -60,6 +60,15 @@ export async function GET(
   return proxy(req, path);
 }
 
+// The PDF export with diagrams: the browser draws them and posts them along.
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ path?: string[] }> },
+) {
+  const { path } = await params;
+  return proxy(req, path);
+}
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ path?: string[] }> },

@@ -9,6 +9,16 @@ vi.mock("@assistant-ui/react", () => ({
   useThread: <T,>(select: (t: typeof thread) => T) => select(thread),
 }));
 
+// Drawing needs Mermaid and a canvas, neither of which jsdom has; the button's
+// part is asking for each diagram and sending what comes back.
+const diagramPng = vi.hoisted(() =>
+  vi.fn(async (source: string) => ({ source, png: "iVBO", width: 300, height: 200 })),
+);
+vi.mock("@/lib/mermaid", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/mermaid")>()),
+  diagramPng,
+}));
+
 import { ExportPdfButton } from "./ExportPdfButton";
 
 function respond(response: Partial<Response>) {
@@ -90,6 +100,64 @@ describe("ExportPdfButton", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("sends the chat's diagrams, drawn, with the request", async () => {
+    thread = {
+      isRunning: false,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "```mermaid\nnot mine\n```" }] },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "```mermaid\ngraph TD\n  A --> B\n```" }],
+        },
+        // The same diagram again is drawn once.
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Again:\n\n```mermaid\ngraph TD\n  A --> B\n```" }],
+        },
+      ],
+    };
+    const fetchMock = respond({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      blob: async () => new Blob(["%PDF-"]),
+    });
+    captureDownloads();
+
+    render(<ExportPdfButton threadId="t1" />);
+    await act(async () => button().click());
+
+    expect(diagramPng).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/t1/export.pdf", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        diagrams: [{ source: "graph TD\n  A --> B", png: "iVBO", width: 300, height: 200 }],
+      }),
+    });
+  });
+
+  it("leaves out a diagram that will not draw", async () => {
+    diagramPng.mockResolvedValueOnce(null as never);
+    thread = {
+      isRunning: false,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "```mermaid\nbad\n```" }] }],
+    };
+    const fetchMock = respond({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      blob: async () => new Blob(["%PDF-"]),
+    });
+    captureDownloads();
+
+    render(<ExportPdfButton threadId="t1" />);
+    await act(async () => button().click());
+
+    // Nothing to send: the plain export, which shows the block's source.
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/t1/export.pdf");
   });
 
   it("is unavailable while an answer is streaming", () => {
