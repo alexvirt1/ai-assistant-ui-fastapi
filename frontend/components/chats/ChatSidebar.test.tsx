@@ -211,6 +211,187 @@ describe("ChatSidebar", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
   });
 
+  describe("deleting selected chats", () => {
+    /** A backend holding `initial`, honouring DELETE except for ids in `failing`. */
+    function mockStore(initial: ChatSummary[], failing: string[] = []) {
+      let rows = [...initial];
+      const deleted: string[] = [];
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").pop()!);
+          if (failing.includes(id)) {
+            return { ok: false, status: 500, json: async () => ({}) };
+          }
+          deleted.push(id);
+          rows = rows.filter((row) => row.id !== id);
+          return { ok: true, status: 204, json: async () => null };
+        }
+        const query = new URL(url, "http://localhost").searchParams.get("q");
+        const visible = query ? rows.filter((row) => row.title.includes(query)) : rows;
+        return { ok: true, status: 200, json: async () => visible };
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return { deleted };
+    }
+
+    const three = [
+      chat({ id: "t1", title: "Paris" }),
+      chat({ id: "t2", title: "Kafka retention" }),
+      chat({ id: "t3", title: "Kafka partitions" }),
+    ];
+
+    async function enterSelectMode() {
+      await act(async () => screen.getByRole("button", { name: "Select" }).click());
+    }
+
+    async function check(title: string) {
+      await act(async () => screen.getByRole("checkbox", { name: new RegExp(title) }).click());
+    }
+
+    async function clickDelete() {
+      await act(async () =>
+        screen.getByRole("button", { name: /^Delete/ }).click(),
+      );
+    }
+
+    it("deletes only the chats that were ticked, after confirming", async () => {
+      const { deleted } = mockStore(three);
+      vi.stubGlobal("confirm", vi.fn(() => true));
+      const onSelect = vi.fn();
+      const onDeleted = vi.fn();
+
+      render(
+        <ChatSidebar
+          activeId={null}
+          refreshKey={0}
+          onSelect={onSelect}
+          onNew={noop}
+          onDeleted={onDeleted}
+        />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+      await check("Paris");
+      await check("Kafka partitions");
+      await clickDelete();
+
+      expect(window.confirm).toHaveBeenCalledWith(
+        "Delete these 2 chats? This cannot be undone.",
+      );
+      expect(deleted.sort()).toEqual(["t1", "t3"]);
+      expect(onDeleted).toHaveBeenCalledWith(["t1", "t3"]);
+      // Ticking a row must not open it.
+      expect(onSelect).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByText("Paris")).not.toBeInTheDocument());
+      expect(screen.getByText("Kafka retention")).toBeInTheDocument();
+      // Done: back to the normal list.
+      expect(screen.getByRole("button", { name: "Select" })).toBeInTheDocument();
+    });
+
+    it("deletes nothing when the confirmation is declined", async () => {
+      const { deleted } = mockStore(three);
+      vi.stubGlobal("confirm", vi.fn(() => false));
+
+      render(
+        <ChatSidebar activeId={null} refreshKey={0} onSelect={noop} onNew={noop} />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+      await check("Paris");
+      await clickDelete();
+
+      expect(deleted).toEqual([]);
+      expect(screen.getByRole("checkbox", { name: /Paris/ })).toBeChecked();
+    });
+
+    it("does not delete a selected chat that a search has hidden", async () => {
+      const { deleted } = mockStore(three);
+      vi.stubGlobal("confirm", vi.fn(() => true));
+
+      render(
+        <ChatSidebar activeId={null} refreshKey={0} onSelect={noop} onNew={noop} />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+      await check("Paris");
+      await check("Kafka retention");
+
+      await typeSearch("Kafka");
+      await waitFor(() => expect(screen.queryByText("Paris")).not.toBeInTheDocument());
+      await clickDelete();
+
+      expect(deleted).toEqual(["t2"]);
+    });
+
+    it("selects all and none", async () => {
+      mockStore(three);
+
+      render(
+        <ChatSidebar activeId={null} refreshKey={0} onSelect={noop} onNew={noop} />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+
+      await act(async () => screen.getByRole("button", { name: "Select all" }).click());
+      expect(screen.getByText("3 selected")).toBeInTheDocument();
+
+      await act(async () => screen.getByRole("button", { name: "Select none" }).click());
+      expect(screen.getByText("0 selected")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+    });
+
+    it("will not delete the open chat while it is being answered", async () => {
+      mockStore(three);
+
+      render(
+        <ChatSidebar
+          activeId="t1"
+          refreshKey={0}
+          disabled
+          onSelect={noop}
+          onNew={noop}
+        />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+
+      expect(screen.getByRole("checkbox", { name: /Paris/ })).toBeDisabled();
+      expect(screen.getByRole("checkbox", { name: /Kafka retention/ })).toBeEnabled();
+
+      await act(async () => screen.getByRole("button", { name: "Select all" }).click());
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+    });
+
+    it("keeps the chats that failed to delete selected and says so", async () => {
+      const { deleted } = mockStore(three, ["t2"]);
+      vi.stubGlobal("confirm", vi.fn(() => true));
+      const onDeleted = vi.fn();
+
+      render(
+        <ChatSidebar
+          activeId={null}
+          refreshKey={0}
+          onSelect={noop}
+          onNew={noop}
+          onDeleted={onDeleted}
+        />,
+      );
+      await screen.findByText("Paris");
+      await enterSelectMode();
+      await check("Paris");
+      await check("Kafka retention");
+      await clickDelete();
+
+      expect(deleted).toEqual(["t1"]);
+      expect(onDeleted).toHaveBeenCalledWith(["t1"]);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Could not delete 1 of 2 chats.",
+      );
+      await waitFor(() => expect(screen.queryByText("Paris")).not.toBeInTheDocument());
+      expect(screen.getByRole("checkbox", { name: /Kafka retention/ })).toBeChecked();
+    });
+  });
+
   it("reports a failure instead of looking empty", async () => {
     vi.stubGlobal(
       "fetch",

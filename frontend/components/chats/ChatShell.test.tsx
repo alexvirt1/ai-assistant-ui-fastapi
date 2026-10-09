@@ -256,6 +256,43 @@ describe("ChatShell", () => {
     expect(window.localStorage.length).toBe(0);
   });
 
+  it("moves to a new chat when the open one is deleted", async () => {
+    // Staying would leave a pane for a thread with no transcript, and the next
+    // turn would silently recreate it under the deleted id.
+    setThreadCookie("t1");
+    mockBackend({ transcripts: { t1: [said("user", "about france")] } });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    render(<ChatShell />);
+    await waitFor(() => expect(pane()).toHaveAttribute("data-thread", "t1"));
+    await screen.findByText("First chat");
+
+    await act(async () => screen.getByRole("button", { name: "Select" }).click());
+    await act(async () => screen.getByRole("checkbox", { name: /First chat/ }).click());
+    await act(async () => screen.getByRole("button", { name: /^Delete/ }).click());
+
+    await waitFor(() => expect(pane()).not.toHaveAttribute("data-thread", "t1"));
+    expect(readThreadCookie()).toBe(pane().getAttribute("data-thread"));
+    expect(screen.queryByText("about france")).toBeNull();
+  });
+
+  it("stays on the open chat when only others are deleted", async () => {
+    setThreadCookie("t1");
+    mockBackend({ transcripts: { t1: [said("user", "about france")] } });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    render(<ChatShell />);
+    await waitFor(() => expect(pane()).toHaveAttribute("data-thread", "t1"));
+    await screen.findByText("Second chat");
+
+    await act(async () => screen.getByRole("button", { name: "Select" }).click());
+    await act(async () => screen.getByRole("checkbox", { name: /Second chat/ }).click());
+    await act(async () => screen.getByRole("button", { name: /^Delete/ }).click());
+
+    expect(pane()).toHaveAttribute("data-thread", "t1");
+    expect(screen.getByText("about france")).toBeInTheDocument();
+  });
+
   it("starts a new chat with nothing attached", async () => {
     setThreadCookie("t1");
     mockBackend({ documents: { t1: [doc()] } });
