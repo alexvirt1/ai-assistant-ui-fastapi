@@ -12,6 +12,17 @@ This project showcases:
 - A modern chat UI built with assistant-ui and Next.js
 - An extensible tool registry: built-in, web, external-LLM, and declarative REST tools
 
+In the chat:
+
+- **Many conversations**, persisted in Postgres: a sidebar to search and switch
+  between them, and Select mode to delete several at once
+- **Documents** attached to a conversation, indexed for retrieval when too large
+  to include
+- **Model selection** from a picker in the header, or by asking in the chat
+- **Answers** rendered as markdown with tables, code, and LaTeX math
+- **Export PDF**: the open conversation as a single PDF, with tables and
+  typeset math (see [backend/README.md](backend/README.md#pdf-export))
+
 ## Tool Architecture
 
 Tools live in `backend/app/tools/`, one module per tool (or tool family). Each
@@ -66,8 +77,7 @@ Key properties:
 
 - Python 3.11
 - Node.js v20.18.0
-- npm v10.9.2
-- Yarn v1.22.22
+- pnpm 9 (pinned in `frontend/package.json`; `corepack enable` provides it)
 
 ## Project Structure
 
@@ -99,9 +109,13 @@ The frontend is generated using the assistant-ui CLI tool.
 
 ```bash
 cd frontend
-yarn install
-yarn dev
+pnpm install
+pnpm dev
 ```
+
+For production, `pnpm build && pnpm start`. After an upgrade that adds backend
+endpoints, restart the backend before deploying the frontend; otherwise the new
+UI calls routes the running backend does not have yet.
 
 ## Credits
 

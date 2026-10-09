@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "backend"
-version = "1.6.0"
+version = "1.7.0"
 description = ""
 authors = ["Alexander Muratov", "Hoang Le"]
 readme = "README.md"
@@ -34,6 +34,10 @@ langchain-mcp-adapters = "^0.3.1"
 # mcp 2.0 removed. That surfaces as an ImportError the moment an MCP server is
 # configured. Revisit when langchain-mcp-adapters declares mcp 2.x support.
 mcp = "^1.29.0"
+fpdf2 = "^2.8.4"
+markdown-it-py = "^4.0"
+ziamath = "^0.13"
+mdit-py-plugins = "^0.5"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -43,6 +47,7 @@ mcp = "^1.29.0"
 # the only thing supplying fastapi, which is now declared explicitly.
 pytest = "^9.1.1"
 pytest-asyncio = "^1.4.0"
+pypdf = "^6.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

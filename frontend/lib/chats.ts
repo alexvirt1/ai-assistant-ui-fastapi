@@ -138,3 +138,47 @@ export async function deleteChat(threadId: string): Promise<void> {
     throw new Error(`Deleting chat failed (${response.status})`);
   }
 }
+
+/** Where a chat's PDF is served from. */
+export function chatPdfUrl(threadId: string): string {
+  return `/api/chats/${encodeURIComponent(threadId)}/export.pdf`;
+}
+
+/**
+ * The file name a Content-Disposition header asks for.
+ *
+ * Prefers `filename*` (RFC 5987), which carries a non-ASCII title intact;
+ * `filename` is the ASCII fallback the backend sends alongside it.
+ */
+export function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const extended = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1]!.trim());
+    } catch {
+      // Malformed percent-encoding: fall through to the plain name.
+    }
+  }
+  const plain = header.match(/filename="([^"]*)"/i);
+  return plain ? plain[1]! : null;
+}
+
+/**
+ * Fetch a chat's PDF, failing loudly rather than downloading an error.
+ *
+ * Fetched rather than linked: with a plain <a download>, a failed export
+ * saved the backend's JSON error as "export.json" and showed nothing else -
+ * seen live when the frontend was deployed ahead of the backend.
+ */
+export async function fetchChatPdf(
+  threadId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(chatPdfUrl(threadId));
+  if (!response.ok) {
+    throw new Error(`Export failed (${response.status})`);
+  }
+  const filename =
+    filenameFromDisposition(response.headers.get("content-disposition")) ?? "chat.pdf";
+  return { blob: await response.blob(), filename };
+}
