@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-09
+
+**Deleting chats from the sidebar.** The backend could already delete a chat,
+checkpoint rows included, but nothing in the UI called it. A Select button next
+to "New chat" now turns the list into checkboxes, with Select all / Select none
+and a Delete button that asks for confirmation. Only chats visible on screen are
+deleted, so a selection made before a search narrowed the list cannot remove
+chats you no longer see. The open chat cannot be selected while it is being
+answered, since its run would keep writing to a thread that no longer exists.
+Each delete succeeds or fails on its own: failures stay selected with a message
+and the rest go through. Deleting the open chat moves you to a new one rather
+than leaving a pane for a transcript that is gone.
+
+**Fixed: chat stopped working after PostgreSQL restarted.** The checkpointer
+held one connection for the life of the process and never reopened it. When
+unattended-upgrades restarted PostgreSQL, every turn afterwards failed with
+"the connection is closed" until the backend was restarted. It now runs on a
+connection pool that checks each connection before use and replaces dead ones,
+sized by `CHECKPOINTER_POOL_SIZE` (default 5).
+
 ## [1.5.0] - 2026-10-07
 
 **Choosing the chat model.** The agent used to run on whatever the `fast` role
