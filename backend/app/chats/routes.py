@@ -7,11 +7,13 @@ lifespan has built it (see app/server.py).
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ..identity import current_user_id
 from . import store as chat_store
+from .export import content_disposition, pdf_filename, render_chat_pdf
 from .messages import to_core_messages
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,34 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
         messages = (state.values or {}).get("messages", []) if state else []
         return to_core_messages(messages)
+
+    @router.get("/{thread_id}/export.pdf")
+    async def export_chat_pdf(
+        thread_id: str,
+        user_id: str = Depends(current_user_id),
+    ) -> Response:
+        # Same ownership gate as the history endpoint: this is the history,
+        # just in another format.
+        thread = await chat_store.get_thread(thread_id, user_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="No such chat")
+
+        state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        messages = (state.values or {}).get("messages", []) if state else []
+        title = thread.title or "Untitled chat"
+        # Off the event loop: laying out a long conversation is CPU-bound, and
+        # a streaming answer in another tab would stall while it ran.
+        pdf = await run_in_threadpool(render_chat_pdf, title, to_core_messages(messages))
+        return Response(
+            content=pdf,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": content_disposition(pdf_filename(title)),
+                # A transcript; nothing between here and the browser should
+                # keep a copy of it.
+                "Cache-Control": "no-store",
+            },
+        )
 
     @router.get("/{thread_id}/documents")
     async def get_chat_documents(

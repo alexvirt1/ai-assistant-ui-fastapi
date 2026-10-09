@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  chatPdfUrl,
   deleteChat,
+  filenameFromDisposition,
   fetchChatDocuments,
   fetchChatMessages,
   listChats,
@@ -27,6 +29,35 @@ function mockFetch(response: Partial<Response> & { json?: () => unknown }) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("chatPdfUrl", () => {
+  it("encodes the thread id into the path", () => {
+    expect(chatPdfUrl("a/b c")).toBe("/api/chats/a%2Fb%20c/export.pdf");
+  });
+});
+
+describe("filenameFromDisposition", () => {
+  it("prefers the UTF-8 name over the ASCII fallback", () => {
+    expect(
+      filenameFromDisposition(
+        "attachment; filename=\"chat.pdf\"; filename*=UTF-8''%D0%97%D0%B0%D0%B4%D0%B0%D1%87%D0%B0.pdf",
+      ),
+    ).toBe("Задача.pdf");
+  });
+
+  it("falls back to the plain name", () => {
+    expect(filenameFromDisposition('attachment; filename="Kafka retention.pdf"')).toBe(
+      "Kafka retention.pdf",
+    );
+  });
+
+  it("survives malformed encoding and a missing header", () => {
+    expect(
+      filenameFromDisposition("attachment; filename=\"a.pdf\"; filename*=UTF-8''%E0%A4%A"),
+    ).toBe("a.pdf");
+    expect(filenameFromDisposition(null)).toBeNull();
+  });
 });
 
 describe("listChats", () => {
