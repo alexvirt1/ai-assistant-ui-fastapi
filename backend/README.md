@@ -15,6 +15,12 @@ backend/
 │   ├── server.py              # FastAPI app, lifespan, entrypoint (uvicorn :8000)
 │   ├── add_langgraph_route.py # POST /api/chat — LangGraph <-> assistant-stream bridge
 │   ├── langgraph/agent.py     # model + create_react_agent graph
+│   ├── chats/                 # chat registry, history replay, PDF export
+│   │   ├── export.py          #   transcript -> PDF (fpdf2)
+│   │   ├── pdf_math.py        #   LaTeX for the PDF: SVG display math, text inline math
+│   │   └── fonts/             #   bundled DejaVu fonts (with licence)
+│   ├── documents/             # upload, indexing, retrieval, map-reduce summaries
+│   ├── models/                # model roles, Ollama inventory, chat-model selection
 │   └── tools/                 # tool registry (see root README for the full map)
 ├── .env.example               # copy to .env
 ├── mcp_servers.example.yaml   # copy to mcp_servers.yaml to add MCP servers
@@ -48,7 +54,9 @@ poetry run pytest
 ```
 
 The suite is **offline by design** — no Ollama VM, no Postgres, no outbound
-HTTP — so it runs in about a second and needs nothing configured. It covers the
+HTTP — so it runs in under half a minute and needs nothing configured. Most of
+that time is the PDF tests, which build real PDFs and read them back with
+pypdf. It covers the
 pure logic where the subtle bugs have actually been: model role resolution and
 fallback, the history-trimming window, tool registration and self-disabling, and
 REST tool construction with `{arg}` / `${ENV_VAR}` interpolation.
@@ -77,6 +85,7 @@ Copy `.env.example` to `.env`. The model and server variables:
 | `OLLAMA_KEEP_ALIVE` | How long the VM holds a model in memory (default `30m`). |
 | `MODELS_CONFIG` | Path to the model-roles YAML (default `backend/models.yaml`). |
 | `DATABASE_URL` | When set, enables per-thread conversation persistence. |
+| `CHECKPOINTER_POOL_SIZE` | Maximum connections in the checkpointer's pool (default `5`). |
 
 Tool-related variables (`ENABLED_TOOLS`, provider API keys, YAML config paths)
 are documented in the [root README](../README.md).
@@ -292,11 +301,38 @@ the stored transcript stays complete.
 
 ### Conversation state
 
-If `DATABASE_URL` is set, the lifespan hook opens an `AsyncPostgresSaver`,
-runs its `setup()` to create the checkpoint tables, and builds the graph with
-it as the checkpointer. Conversation history is then keyed by the `threadId`
-the frontend sends with each request. Without `DATABASE_URL` the graph runs
-without a checkpointer and every request starts from an empty history.
+If `DATABASE_URL` is set, the lifespan hook opens an `AsyncPostgresSaver` on a
+connection pool, runs its `setup()` to create the checkpoint tables, and builds
+the graph with it as the checkpointer. The pool checks each connection before
+use and replaces a dead one. Before 1.6.0 it held a single connection, and a
+PostgreSQL restart (unattended-upgrades does this) broke every turn with "the
+connection is closed" until the backend itself was restarted. Conversation
+history is then keyed by the `threadId` the frontend sends with each request.
+Without `DATABASE_URL` the graph runs without a checkpointer and every request
+starts from an empty history.
+
+### PDF export
+
+`GET /api/chats/{id}/export.pdf` returns a conversation as one PDF, built from
+the same replayed transcript the frontend restores from. It is behind the same
+ownership check as `/messages`, so another user's chat is a 404.
+
+```bash
+curl -OJ http://127.0.0.1:8000/api/chats/$THREAD/export.pdf   # saves "<title>.pdf"
+```
+
+- **Answers** are parsed with markdown-it-py plus GFM tables, strikethrough and
+  `$` math, matching the chat's remark-gfm and remark-math, then adapted to
+  what fpdf2 can lay out (`_prepare_tables`, `_tighten_lists` in `export.py`).
+- **LaTeX**: display math (`$$…$$` at the top level) is typeset by ziamath into
+  an SVG and placed centred. Inline math is converted to text via
+  latex2mathml, because fpdf2 cannot put an image inside a line. Malformed
+  LaTeX shows its source.
+- **Left out on purpose**: tool results (a search returns ~11 000 tokens),
+  attached file contents (named on one line instead), and images (alt text
+  only, because fpdf2 would fetch the URL itself).
+- **Never fails on content**: an answer fpdf2 rejects is printed as plain
+  text. Characters outside DejaVu (CJK, emoji) are dropped with a warning.
 
 ## The `/api/chat` streaming contract
 

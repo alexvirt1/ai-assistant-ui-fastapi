@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-09
+
+**Tables in answers.** Models answer comparisons as pipe tables, which plain
+CommonMark left as lines of literal `|` characters. The chat now renders
+GitHub-flavoured markdown through `remark-gfm`: tables, task lists,
+strikethrough and bare URLs. assistant-ui already styled tables; nothing had
+been producing them. A wide table scrolls inside its message instead of
+widening the thread. A single `~` is not strikethrough, because models write
+`~5 min` for "about five minutes" and two of those in a sentence would strike
+out the text between them; `~~struck~~` still works. The markdown setup moved
+to `components/MarkdownText.tsx`.
+
+**Exporting a chat as a PDF.** An Export PDF button in the chat header
+downloads the open conversation, built by the backend from the stored
+transcript at `GET /api/chats/{id}/export.pdf`. The endpoint checks ownership
+the same way the history endpoint does. The PDF has the title, the date, and
+each turn under YOU / ASSISTANT. Questions appear as typed; answers keep their
+headings, nested lists, tables with column alignment, code, links and
+strikethrough. Tool calls are named on one line without their results, since a
+document search returns ~11 000 tokens of passages. Attached files are named
+on one line too: two inlined books once made a 987-page PDF that took 43 s.
+
+LaTeX is rendered, not copied as source. Display math (`$$…$$`) is typeset by
+ziamath as centred vector math, covering fractions, roots, limits, matrices,
+`cases`, `aligned` and Cyrillic `\text{}`. Inline math (`$…$`) becomes text
+with Unicode symbols, real super- and subscripts and `a/b`, because fpdf2
+cannot place an image inside a line of text. Malformed LaTeX shows its source.
+
+The renderer is fpdf2, because WeasyPrint needs Pango, which neither the VM nor
+the slim image has. Answers are parsed with markdown-it-py plus GFM tables,
+strikethrough and `$` math, matching the chat's remark plugins so that lists,
+tables and math are read the same way in both. Raw HTML in an answer is shown
+as text. Images become their alt text, because fpdf2 fetches `<img src>` itself
+and model output could make the server request LAN addresses. An answer fpdf2
+cannot lay out falls back to plain text rather than failing the export. DejaVu
+Sans and Sans Mono are bundled, since the core PDF fonts are Latin-1 only and
+the image has no fonts; CJK and emoji have no glyphs and are dropped.
+
+The button fetches the PDF and then saves it, rather than being a plain
+download link. A plain link saved the backend's 404 JSON as `export.json`, seen
+live when the frontend was deployed ahead of the backend. A failure now reads
+"Export failed", with the status in the tooltip.
+
+**Upgrading.** New backend dependencies: `fpdf2`, `markdown-it-py`,
+`mdit-py-plugins` and `ziamath`, all pure Python (`pypdf` is a dev
+dependency). New frontend dependency: `remark-gfm`. Restart the backend before
+deploying the frontend. No configuration changes are required.
+
 ## [1.6.0] - 2026-10-09
 
 **Deleting chats from the sidebar.** The backend could already delete a chat,
