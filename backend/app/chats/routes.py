@@ -5,15 +5,19 @@ endpoint reads the compiled graph's state, and the graph only exists once the
 lifespan has built it (see app/server.py).
 """
 
+import base64
+import binascii
 import logging
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..identity import current_user_id
 from . import store as chat_store
-from .export import content_disposition, pdf_filename, render_chat_pdf
+from .export import Diagram, content_disposition, diagram_key, pdf_filename, render_chat_pdf
 from .messages import to_core_messages
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,44 @@ class ChatSummary(BaseModel):
 class ChatUpdate(BaseModel):
     title: str | None = None
     archived: bool | None = None
+
+
+# A chat's diagrams drawn at print resolution are 20-300 KB each; these caps
+# leave room for a large one while keeping one request from holding hundreds
+# of megabytes in memory.
+MAX_DIAGRAMS = 40
+MAX_PNG_BASE64 = 4_000_000
+
+
+class DiagramUpload(BaseModel):
+    source: str = Field(max_length=100_000)
+    png: str = Field(max_length=MAX_PNG_BASE64, description="Base64, no data: prefix")
+    width: float = Field(gt=0, le=20_000, description="On-screen size in CSS pixels")
+    height: float = Field(gt=0, le=20_000)
+
+
+class ExportRequest(BaseModel):
+    diagrams: list[DiagramUpload] = Field(default=[], max_length=MAX_DIAGRAMS)
+
+
+def _decode_diagrams(uploads: list[DiagramUpload]) -> dict[str, Diagram]:
+    """The posted diagrams, checked to be PNGs before fpdf2 is handed them.
+
+    A bad one is refused outright rather than skipped: the frontend only sends
+    what a canvas produced, so anything else is a bug worth seeing.
+    """
+    diagrams = {}
+    for upload in uploads:
+        try:
+            png = base64.b64decode(upload.png, validate=True)
+            with Image.open(BytesIO(png)) as image:
+                if image.format != "PNG":
+                    raise ValueError(image.format)
+                image.verify()
+        except (binascii.Error, UnidentifiedImageError, ValueError, OSError) as error:
+            raise HTTPException(status_code=422, detail="A diagram is not a PNG") from error
+        diagrams[diagram_key(upload.source)] = Diagram(png, upload.width, upload.height)
+    return diagrams
 
 
 def make_chats_router(graph, checkpointer=None) -> APIRouter:
@@ -86,6 +128,18 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         thread_id: str,
         user_id: str = Depends(current_user_id),
     ) -> Response:
+        return await _export(thread_id, user_id, {})
+
+    @router.post("/{thread_id}/export.pdf")
+    async def export_chat_pdf_with_diagrams(
+        thread_id: str,
+        request: ExportRequest,
+        user_id: str = Depends(current_user_id),
+    ) -> Response:
+        """The PDF, with the chat's Mermaid diagrams as drawn by the browser."""
+        return await _export(thread_id, user_id, _decode_diagrams(request.diagrams))
+
+    async def _export(thread_id: str, user_id: str, diagrams: dict[str, Diagram]) -> Response:
         # Same ownership gate as the history endpoint: this is the history,
         # just in another format.
         thread = await chat_store.get_thread(thread_id, user_id)
@@ -97,7 +151,9 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         title = thread.title or "Untitled chat"
         # Off the event loop: laying out a long conversation is CPU-bound, and
         # a streaming answer in another tab would stall while it ran.
-        pdf = await run_in_threadpool(render_chat_pdf, title, to_core_messages(messages))
+        pdf = await run_in_threadpool(
+            render_chat_pdf, title, to_core_messages(messages), None, diagrams
+        )
         return Response(
             content=pdf,
             media_type="application/pdf",

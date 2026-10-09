@@ -4,6 +4,7 @@ import { useThread } from "@assistant-ui/react";
 import { useEffect, useState } from "react";
 
 import { fetchChatPdf } from "@/lib/chats";
+import { diagramPng, mermaidSources, type DiagramImage } from "@/lib/mermaid";
 
 /** How long a failure stays on the button before it can be retried quietly. */
 const ERROR_VISIBLE_MS = 5000;
@@ -22,6 +23,20 @@ function save(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** The distinct ```mermaid blocks in the thread's answers. */
+function diagramSources(messages: readonly unknown[]): string[] {
+  const sources = new Set<string>();
+  for (const message of messages as { role?: string; content?: unknown }[]) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content as { type?: string; text?: string }[]) {
+      if (part.type === "text" && part.text) {
+        mermaidSources(part.text).forEach((source) => sources.add(source));
+      }
+    }
+  }
+  return [...sources];
+}
+
 /**
  * Downloads the open conversation as a PDF.
  *
@@ -30,8 +45,9 @@ function save(blob: Blob, filename: string) {
  * silently leave out the answer the user is watching being written.
  */
 export function ExportPdfButton({ threadId }: { threadId: string }) {
-  const isEmpty = useThread((t) => t.messages.length === 0);
+  const messages = useThread((t) => t.messages);
   const isRunning = useThread((t) => t.isRunning);
+  const isEmpty = messages.length === 0;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +61,14 @@ export function ExportPdfButton({ threadId }: { threadId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const { blob, filename } = await fetchChatPdf(threadId);
+      // Drawn here, one at a time, because the backend cannot draw them;
+      // one that will not draw is left to the PDF to show as source.
+      const diagrams: DiagramImage[] = [];
+      for (const source of diagramSources(messages)) {
+        const image = await diagramPng(source);
+        if (image) diagrams.push(image);
+      }
+      const { blob, filename } = await fetchChatPdf(threadId, diagrams);
       save(blob, filename);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Export failed");

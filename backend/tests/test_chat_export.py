@@ -4,6 +4,7 @@ Text is checked by extracting it back out of the PDF with pypdf, so these
 tests see what a reader of the file would, not what was handed to fpdf2.
 """
 
+import base64
 import io
 import re
 from datetime import datetime, timezone
@@ -12,10 +13,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from PIL import Image
 from pypdf import PdfReader
 
 from app.chats import export, routes
 from app.chats.export import (
+    Diagram,
     content_disposition,
     markdown_to_html,
     pdf_filename,
@@ -35,6 +38,19 @@ def text_of(pdf: bytes) -> str:
 
 def said(role: str, text: str) -> dict:
     return {"role": role, "content": [{"type": "text", "text": text}]}
+
+
+def png(width: int = 30, height: int = 20) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(out, format="PNG")
+    return out.getvalue()
+
+
+def images_in(pdf: bytes) -> int:
+    return sum(len(page.images) for page in PdfReader(io.BytesIO(pdf)).pages)
+
+
+FLOW = "graph TD\n  A[Start] --> B[Done]\n"
 
 
 TABLE = (
@@ -290,6 +306,53 @@ class TestMath:
         assert "1. one" in text and "2. two" in text and "3. three" in text
 
 
+class TestDiagrams:
+    def test_a_diagram_with_an_image_is_drawn_not_written(self):
+        pdf = render_chat_pdf(
+            "t",
+            [said("assistant", "Before\n\n```mermaid\n" + FLOW + "```\n\nAfter")],
+            diagrams={FLOW.strip(): Diagram(png(), 300, 200)},
+        )
+        text = text_of(pdf)
+        assert images_in(pdf) == 1
+        assert "Before" in text and "After" in text
+        assert "A[Start]" not in text
+
+    def test_a_diagram_without_an_image_shows_its_source(self):
+        # Exported without the browser's images (a plain GET, or one that
+        # would not draw): the source is better than nothing.
+        pdf = render_chat_pdf("t", [said("assistant", "```mermaid\n" + FLOW + "```")])
+        assert images_in(pdf) == 0
+        assert "A[Start] --> B[Done]" in text_of(pdf)
+
+    def test_an_image_for_other_source_is_not_used(self):
+        pdf = render_chat_pdf(
+            "t",
+            [said("assistant", "```mermaid\n" + FLOW + "```")],
+            diagrams={"graph LR\n  X --> Y": Diagram(png(), 300, 200)},
+        )
+        assert images_in(pdf) == 0
+        assert "A[Start]" in text_of(pdf)
+
+    def test_other_code_blocks_are_never_replaced(self):
+        pdf = render_chat_pdf(
+            "t",
+            [said("assistant", "```python\n" + FLOW + "```")],
+            diagrams={FLOW.strip(): Diagram(png(), 300, 200)},
+        )
+        assert images_in(pdf) == 0
+
+    def test_a_huge_diagram_fits_one_page(self):
+        pdf = render_chat_pdf(
+            "t",
+            [said("assistant", "```mermaid\n" + FLOW + "```")],
+            diagrams={FLOW.strip(): Diagram(png(), 4000, 9000)},
+        )
+        # Shrunk onto the page after the header rather than overflowing it.
+        assert images_in(pdf) == 1
+        assert len(PdfReader(io.BytesIO(pdf)).pages) == 2
+
+
 class TestFilename:
     @pytest.mark.parametrize(
         "title, expected",
@@ -382,6 +445,51 @@ class TestEndpoint:
         response = client.get("/api/chats/t1/export.pdf")
         assert 'filename="Untitled chat.pdf"' in response.headers["content-disposition"]
         assert "Untitled chat" in text_of(response.content)
+
+
+class TestEndpointWithDiagrams:
+    def diagram(self, data: bytes) -> dict:
+        return {
+            "source": FLOW,
+            "png": base64.b64encode(data).decode(),
+            "width": 300,
+            "height": 200,
+        }
+
+    def test_posted_diagrams_are_drawn(self, monkeypatch):
+        client = client_for(
+            monkeypatch, {"t1": "Flow"}, [AIMessage(content="```mermaid\n" + FLOW + "```")]
+        )
+        response = client.post(
+            "/api/chats/t1/export.pdf", json={"diagrams": [self.diagram(png())]}
+        )
+        assert response.status_code == 200
+        assert images_in(response.content) == 1
+        assert "A[Start]" not in text_of(response.content)
+
+    @pytest.mark.parametrize("data", [b"not an image", b"\x89PNG\r\n\x1a\nbroken"])
+    def test_something_other_than_a_png_is_refused(self, monkeypatch, data):
+        client = client_for(monkeypatch, {"t1": "Flow"}, [AIMessage(content="hi")])
+        response = client.post(
+            "/api/chats/t1/export.pdf", json={"diagrams": [self.diagram(data)]}
+        )
+        assert response.status_code == 422
+
+    def test_a_jpeg_is_refused(self, monkeypatch):
+        out = io.BytesIO()
+        Image.new("RGB", (4, 4)).save(out, format="JPEG")
+        client = client_for(monkeypatch, {"t1": "Flow"}, [AIMessage(content="hi")])
+        response = client.post(
+            "/api/chats/t1/export.pdf", json={"diagrams": [self.diagram(out.getvalue())]}
+        )
+        assert response.status_code == 422
+
+    def test_someone_elses_chat_is_still_404(self, monkeypatch):
+        client = client_for(monkeypatch, {}, [HumanMessage(content="secret")])
+        response = client.post(
+            "/api/chats/t1/export.pdf", json={"diagrams": [self.diagram(png())]}
+        )
+        assert response.status_code == 404
 
 
 def test_default_user_is_what_the_endpoint_checks_against(monkeypatch):

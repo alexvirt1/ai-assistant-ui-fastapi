@@ -8,6 +8,8 @@
  * a stale transcript is worse than a refetch that takes 20ms on localhost.
  */
 
+import type { DiagramImage } from "./mermaid";
+
 /** One row in the sidebar. Mirrors ChatSummary in backend/app/chats/routes.py. */
 export type ChatSummary = {
   id: string;
@@ -170,11 +172,23 @@ export function filenameFromDisposition(header: string | null): string | null {
  * Fetched rather than linked: with a plain <a download>, a failed export
  * saved the backend's JSON error as "export.json" and showed nothing else -
  * seen live when the frontend was deployed ahead of the backend.
+ *
+ * `diagrams` are the chat's Mermaid diagrams drawn as images (diagramPng),
+ * posted with the request because the backend has nothing to draw them with.
+ * Without them, or for any block not among them, the PDF shows the source.
  */
 export async function fetchChatPdf(
   threadId: string,
+  diagrams: DiagramImage[] = [],
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(chatPdfUrl(threadId));
+  const response =
+    diagrams.length > 0
+      ? await fetch(chatPdfUrl(threadId), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ diagrams }),
+        })
+      : await fetch(chatPdfUrl(threadId));
   if (!response.ok) {
     throw new Error(`Export failed (${response.status})`);
   }
