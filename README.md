@@ -19,9 +19,11 @@ In the chat:
 - **Documents** attached to a conversation, indexed for retrieval when too large
   to include
 - **Model selection** from a picker in the header, or by asking in the chat
-- **Answers** rendered as markdown with tables, code, and LaTeX math
-- **Export PDF**: the open conversation as a single PDF, with tables and
-  typeset math (see [backend/README.md](backend/README.md#pdf-export))
+- **Answers** rendered as markdown with tables, code, LaTeX math, and Mermaid
+  diagrams (a ```` ```mermaid ```` block is drawn once its fence closes)
+  that opens filling the window when clicked
+- **Export PDF**: the open conversation as a single PDF, with tables, typeset
+  math and diagrams (see [backend/README.md](backend/README.md#pdf-export))
 
 ## Tool Architecture
 
