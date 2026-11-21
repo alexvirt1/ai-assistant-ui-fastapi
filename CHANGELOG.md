@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-21
+
 **GPU reservations from the GPU host.** Agreed with the AI-1 agent, which runs
 that host: it can reserve the GPU by writing ComfyUI userdata
 `gpu-reservation.json` with a UTC `until`. While a reservation is in force, image
