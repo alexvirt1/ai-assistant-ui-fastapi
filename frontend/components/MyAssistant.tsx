@@ -19,6 +19,7 @@ import {
   ToolExecutionIndicators,
   ToolRunningFallback,
 } from "./tools/ToolExecutionIndicators";
+import { GeneratedImageUI } from "./tools/GeneratedImage";
 
 export function MyAssistant({
   threadId,
@@ -71,6 +72,7 @@ export function MyAssistant({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ToolExecutionIndicators />
+      <GeneratedImageUI />
       {onRunningChange ? (
         <ThreadActivity onRunningChange={onRunningChange} />
       ) : null}

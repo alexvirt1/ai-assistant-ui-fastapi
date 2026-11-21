@@ -8,7 +8,7 @@ import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
  * (result arrives) or fails, render nothing so the indicator disappears.
  */
 
-const RunningIndicator = ({
+export const RunningIndicator = ({
   icon,
   description,
 }: {
@@ -60,7 +60,7 @@ const ThinkingDot = () => (
  * token arrives a text part is appended, this is no longer the last part, and
  * the dot disappears.
  */
-const WaitingForAnswer = ({ toolCallId }: { toolCallId: string }) => {
+export const WaitingForAnswer = ({ toolCallId }: { toolCallId: string }) => {
   const waiting = useMessage((m) => {
     if (m.role !== "assistant" || m.status.type !== "running") return false;
     const last = m.content[m.content.length - 1];
