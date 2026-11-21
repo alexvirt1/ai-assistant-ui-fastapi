@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
@@ -168,6 +169,26 @@ class ChatRequest(BaseModel):
     messages: List[LanguageModelV1Message]
 
 
+# Seconds between heartbeats on a running turn's stream.
+HEARTBEAT_SECONDS = 30
+
+
+async def keep_alive(controller: RunController) -> None:
+    """Send a data chunk every HEARTBEAT_SECONDS until cancelled.
+
+    A turn can be silent for minutes: with tools bound, the model's reply is not
+    streamed (disable_streaming="tool_calling"), and an image takes a minute to
+    generate. The Next.js proxy's fetch (undici) aborts a response body that
+    sends nothing for 300 s, and the chat then shows an empty answer while the
+    backend carries on - seen live when qwen3:8b ran on the CPU and took five
+    minutes to call generate_image. assistant-ui's decoder ignores data chunks
+    ("2:", a TODO in assistantDecoderStream), so these change nothing on screen.
+    """
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        controller.add_data({"heartbeat": True})
+
+
 def add_langgraph_route(app: FastAPI, graph, path: str):
     async def chat_completions(
         request: ChatRequest,
@@ -230,7 +251,7 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 # Falls back to what the client sent, which is what this did
                 # before the association existed.
                 logger.exception("could not resolve documents for %s", thread_id)
-        async def run(controller: RunController):
+        async def run_turn(controller: RunController):
             tool_calls = {}
             tool_calls_by_idx = {}
             emitted_text = ""
@@ -343,6 +364,13 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 await chat_store.touch_thread(thread_id, user_id)
             except Exception:
                 logger.exception("could not touch thread %s", thread_id)
+
+        async def run(controller: RunController):
+            heartbeat = asyncio.create_task(keep_alive(controller))
+            try:
+                await run_turn(controller)
+            finally:
+                heartbeat.cancel()
 
         return DataStreamResponse(create_run(run))
 

@@ -252,9 +252,26 @@ def fake_service(monkeypatch):
 
     async def free_memory():
         calls["freed"] = True
+        calls["handbacks"] = calls.get("handbacks", 0) + 1
+
+    async def released():
+        return True
+
+    async def warm(tag, num_ctx=None):
+        calls["warmed"] = (tag, num_ctx)
+        return True
 
     class Resident:
         tag = "qwen3:8b"
+        size_bytes = 100
+
+        @property
+        def vram_bytes(self):
+            return calls.get("vram", 100)
+
+        @property
+        def fully_on_gpu(self):
+            return self.vram_bytes >= self.size_bytes
 
     async def resident():
         return [Resident()]
@@ -270,6 +287,9 @@ def fake_service(monkeypatch):
     monkeypatch.setattr(service.comfyui, "available_models", available)
     monkeypatch.setattr(service.comfyui, "generate", generate)
     monkeypatch.setattr(service.comfyui, "free_memory", free_memory)
+    monkeypatch.setattr(service.comfyui, "wait_until_released", released)
+    monkeypatch.setattr(service.ollama, "warm", warm)
+    monkeypatch.setattr(service, "current_tag", lambda: "qwen3:8b")
     monkeypatch.setattr(service.ollama, "resident", resident)
     monkeypatch.setattr(service.ollama, "unload", unload)
     monkeypatch.setattr(service.store, "save_image", save_image)
@@ -407,3 +427,75 @@ def test_download_name():
     assert download_name("A Lighthouse at Dusk, watercolour!") == "a-lighthouse-at-dusk-watercolour.png"
     assert download_name("Кот") == "image.png"
     assert len(download_name("word " * 50)) <= 64
+
+
+async def test_service_warms_chat_model_at_app_context(fake_service, monkeypatch):
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "24576")
+    await service.generate_for_chat(prompt="x", thread_id="t", user_id="u")
+    assert fake_service["warmed"] == ("qwen3:8b", 24576)
+
+
+async def test_batch_hands_gpu_back_once(fake_service, monkeypatch):
+    import asyncio
+    started = []
+
+    async def slow_generate(model, req):
+        started.append(req.seed)
+        await asyncio.sleep(0.01)
+        return png_bytes()
+
+    monkeypatch.setattr(service.comfyui, "generate", slow_generate)
+    await asyncio.gather(*[
+        service.generate_for_chat(prompt="x", thread_id="t", user_id="u", seed=i)
+        for i in range(3)
+    ])
+    assert sorted(started) == [0, 1, 2]
+    assert fake_service["handbacks"] == 1
+    assert service._pending == 0
+
+
+async def test_warns_when_chat_model_lands_on_cpu(fake_service, caplog):
+    fake_service["vram"] = 17
+    with caplog.at_level("WARNING"):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u")
+    assert "only 17% on the GPU" in caplog.text
+
+
+async def test_wait_until_released():
+    states = iter([8 * 2**30, 3 * 2**30, 96 * 2**20])
+
+    def handler(request):
+        used = next(states)
+        return httpx.Response(200, json={"devices": [
+            {"vram_total": 12 * 2**30, "vram_free": 12 * 2**30 - used, "torch_vram_total": used}]})
+
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+    async with client:
+        assert await comfyui.wait_until_released(client, timeout=5)
+
+
+async def test_wait_until_released_gives_up():
+    def handler(request):
+        return httpx.Response(200, json={"devices": [
+            {"vram_total": 12 * 2**30, "vram_free": 2**30, "torch_vram_total": 9 * 2**30}]})
+
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+    async with client:
+        assert not await comfyui.wait_until_released(client, timeout=0)
+
+
+async def test_keep_alive_sends_data_chunks(monkeypatch):
+    import asyncio
+    from app import add_langgraph_route as route
+
+    monkeypatch.setattr(route, "HEARTBEAT_SECONDS", 0.01)
+    sent = []
+
+    class Controller:
+        def add_data(self, data):
+            sent.append(data)
+
+    task = asyncio.create_task(route.keep_alive(Controller()))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    assert sent and all(d == {"heartbeat": True} for d in sent)

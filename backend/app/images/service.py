@@ -7,21 +7,25 @@ fails out of memory or runs from system RAM at a fraction of the speed. So:
 
 1. unload whatever Ollama holds (the chat model, maybe the embedding model)
 2. generate the image
-3. ask ComfyUI to free its models again, so the chat model can load for the
-   reply - which then pays a cold load of about 6 s
+3. ask ComfyUI to free its models again, wait until it has, and preload the
+   chat model - so it lands on the GPU, not the CPU, before the reply
 
 Only one image is generated at a time per backend, behind a lock; a second
-request waits for the first rather than fighting it for the GPU.
+request waits for the first rather than fighting it for the GPU. Steps 1 and 3
+are skipped between images of one batch ("three more variants"): the chat
+model is only needed again after the last one.
 """
 
 import asyncio
 import logging
+import os
 import random
 from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 
 from ..models import ollama
+from ..models.selection import current_tag
 from . import comfyui, store
 from .comfyui import ImageGenerationError, ImageRequest
 
@@ -41,6 +45,8 @@ MAX_PNG_BYTES = 20 * 1024 * 1024
 MAX_PROMPT_CHARS = 2000
 
 _lock = asyncio.Lock()
+# Images waiting for or holding the lock. The last one out hands the GPU back.
+_pending = 0
 
 
 async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
@@ -70,12 +76,18 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
     request = ImageRequest(prompt=prompt, width=width, height=height,
                            seed=seed, steps=spec.default_steps)
 
-    async with _lock:
-        await _unload_chat_models()
-        try:
-            png = await comfyui.generate(spec, request)
-        finally:
-            await comfyui.free_memory()
+    global _pending
+    _pending += 1
+    try:
+        async with _lock:
+            await _unload_chat_models()
+            try:
+                png = await comfyui.generate(spec, request)
+            finally:
+                if _pending == 1:
+                    await _return_gpu_to_chat()
+    finally:
+        _pending -= 1
 
     _check_png(png)
     image_id = await store.save_image(
@@ -96,6 +108,23 @@ async def _unload_chat_models() -> None:
     for model in await ollama.resident():
         if not await ollama.unload(model.tag):
             logger.warning("could not unload %s before generating an image", model.tag)
+
+
+async def _return_gpu_to_chat() -> None:
+    """Free ComfyUI's memory, wait for it, then preload the chat model."""
+    await comfyui.free_memory()
+    if not await comfyui.wait_until_released():
+        logger.warning("ComfyUI did not release GPU memory in time; the chat model may load partly on the CPU")
+    tag = current_tag()
+    await ollama.warm(tag, int(os.getenv("OLLAMA_NUM_CTX", "8192")))
+    for model in await ollama.resident():
+        if model.tag == tag and not model.fully_on_gpu:
+            logger.warning(
+                "%s is only %d%% on the GPU (%d of %d MiB); replies will be slow. "
+                "Lower OLLAMA_NUM_CTX or free GPU memory on the Ollama host.",
+                tag, 100 * model.vram_bytes // max(model.size_bytes, 1),
+                model.vram_bytes // 2**20, model.size_bytes // 2**20,
+            )
 
 
 def _check_png(png: bytes) -> None:

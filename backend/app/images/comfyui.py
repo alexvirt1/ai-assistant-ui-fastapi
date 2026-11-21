@@ -355,3 +355,45 @@ async def free_memory(client: httpx.AsyncClient | None = None) -> None:
     finally:
         if owns_client:
             await client.aclose()
+
+
+# ComfyUI applies /free between jobs, not at once; how long to wait for it.
+RELEASE_TIMEOUT = 20.0
+# Below this much in use, ComfyUI counts as having let go of its models.
+RELEASED_BELOW_BYTES = 1024**3
+
+
+async def wait_until_released(client: httpx.AsyncClient | None = None,
+                              timeout: float | None = None) -> bool:
+    """Wait for ComfyUI's GPU memory to drop after free_memory().
+
+    Without this the chat model can reload while the image model still holds
+    the GPU, and Ollama then puts most of it on the CPU - where it stays until
+    it is unloaded, making every reply many times slower. Seen live.
+    True once released, False on timeout or error (callers carry on anyway).
+    """
+    timeout = RELEASE_TIMEOUT if timeout is None else timeout
+    owns_client = client is None
+    client = client or httpx.AsyncClient(base_url=base_url(), timeout=10)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            resp = await client.get("/system_stats")
+            resp.raise_for_status()
+            devices = resp.json().get("devices") or []
+            if devices and all(
+                d.get("vram_total", 0) - d.get("vram_free", 0) < RELEASED_BELOW_BYTES
+                # torch_vram_total is what ComfyUI itself holds; vram_free is
+                # the whole card, which includes Ollama's share.
+                or d.get("torch_vram_total", 0) < RELEASED_BELOW_BYTES
+                for d in devices
+            ):
+                return True
+            if time.monotonic() > deadline:
+                return False
+            await asyncio.sleep(POLL_INTERVAL or 0.5)
+    except (httpx.HTTPError, ValueError):
+        return False
+    finally:
+        if owns_client:
+            await client.aclose()
