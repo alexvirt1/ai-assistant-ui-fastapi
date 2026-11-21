@@ -295,6 +295,11 @@ def fake_service(monkeypatch):
     monkeypatch.setattr(service.comfyui, "generate", generate)
     monkeypatch.setattr(service.comfyui, "free_memory", free_memory)
     monkeypatch.setattr(service.comfyui, "wait_until_released", released)
+
+    async def no_reservation():
+        return calls.get("reservation")
+
+    monkeypatch.setattr(service.comfyui, "reservation", no_reservation)
     monkeypatch.setattr(service.ollama, "warm", warm)
     monkeypatch.setattr(service, "current_tag", lambda: "qwen3:8b")
     monkeypatch.setattr(service.ollama, "resident", resident)
@@ -541,5 +546,113 @@ async def test_wait_until_released_asks_again(monkeypatch):
 
     client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
     async with client:
-        assert await comfyui.wait_until_released(client, timeout=5)
+        assert await comfyui.wait_until_released(client, timeout=2)
     assert calls["free"] == 1
+
+
+# --- GPU reservations (agreed with the AI-1 agent) ---------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+NOW = datetime(2026, 11, 21, 17, 0, tzinfo=timezone.utc)
+
+
+def test_parse_reservation_valid_and_expired():
+    held = comfyui.parse_reservation(
+        '{"holder": "ai-1", "until": "2026-11-21T18:00:00Z", "reason": "LTX batch"}', NOW)
+    assert held.holder == "ai-1" and held.reason == "LTX batch" and not held.unreadable
+    assert "until" in held.describe() and "LTX batch" in held.describe()
+    assert comfyui.parse_reservation('{"holder": "ai-1", "until": "2026-11-21T16:59:59Z"}', NOW) is None
+
+
+@pytest.mark.parametrize("text", [
+    "not json", "{}", '{"until": 5}', '{"until": "2026-11-21T18:00:00"}',
+    '{"until": "tomorrow Z"}', "[]",
+])
+def test_parse_reservation_fails_closed(text):
+    held = comfyui.parse_reservation(text, NOW)
+    assert held is not None and held.unreadable
+    assert "could not be read" in held.describe()
+
+
+def _reservation_client(status, body=""):
+    def handler(request):
+        assert request.url.path == "/api/userdata/gpu-reservation.json"
+        return httpx.Response(status, text=body)
+    return httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+
+
+async def test_reservation_missing_file_is_free():
+    async with _reservation_client(404) as client:
+        assert await comfyui.reservation(client) is None
+
+
+async def test_reservation_in_force():
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async with _reservation_client(200, json.dumps({"holder": "ai-1", "until": until, "reason": "render"})) as client:
+        held = await comfyui.reservation(client)
+    assert held is not None and held.reason == "render"
+
+
+async def test_reservation_unreadable_warns(caplog):
+    async with _reservation_client(200, "{broken") as client:
+        with caplog.at_level("WARNING"):
+            held = await comfyui.reservation(client)
+    assert held.unreadable and "Tell the owner" in caplog.text
+
+
+async def test_reservation_unreachable_is_free():
+    def down(request):
+        raise httpx.ConnectError("refused")
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(down))
+    async with client:
+        assert await comfyui.reservation(client) is None
+
+
+async def test_service_refuses_during_reservation(fake_service):
+    fake_service["reservation"] = comfyui.Reservation("ai-1", NOW + timedelta(hours=1), "render")
+    with pytest.raises(ImageGenerationError, match="reserved by ai-1"):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u")
+    assert fake_service["unloaded"] == [] and "request" not in fake_service
+
+
+async def test_handback_skipped_when_reserved_mid_batch(fake_service, monkeypatch):
+    async def generate(model, req):
+        # AI-1 takes a reservation while the image is being generated.
+        fake_service["reservation"] = comfyui.Reservation("ai-1", NOW + timedelta(hours=1), "")
+        return png_bytes()
+
+    monkeypatch.setattr(service.comfyui, "generate", generate)
+    await service.generate_for_chat(prompt="x", thread_id="t", user_id="u")
+    assert not fake_service["freed"] and "warmed" not in fake_service
+
+
+async def test_wait_until_released_needs_room_for_chat_model(monkeypatch):
+    monkeypatch.setenv("IMAGE_HANDBACK_FREE_BYTES", str(8.5e9))
+    frees = iter([5.1e9, 8.0e9, 11.7e9])
+    polls = []
+
+    def handler(request):
+        if request.url.path == "/free":
+            return httpx.Response(200, json={})
+        polls.append(1)
+        return httpx.Response(200, json={"devices": [{"vram_total": 12.5e9, "vram_free": next(frees),
+                                                     "torch_vram_total": 0}]})
+
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+    async with client:
+        assert await comfyui.wait_until_released(client, timeout=5)
+    # 5.1 GB free once had the chat model load 21/37 layers on the GPU: not enough.
+    assert len(polls) == 3
+
+
+async def test_chat_turn_during_reservation_is_logged(monkeypatch, caplog):
+    from app import add_langgraph_route as route
+
+    async def held():
+        return comfyui.Reservation("ai-1", NOW + timedelta(hours=1), "render")
+
+    monkeypatch.setattr(route, "comfyui_reservation", held)
+    with caplog.at_level("WARNING"):
+        await route.note_reservation_conflict("t1")
+    assert "chat turn during a GPU reservation" in caplog.text

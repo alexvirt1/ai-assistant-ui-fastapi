@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-21
+
+**GPU reservations from the GPU host.** Agreed with the AI-1 agent, which runs
+that host: it can reserve the GPU by writing ComfyUI userdata
+`gpu-reservation.json` with a UTC `until`. While a reservation is in force, image
+requests are refused with its time and reason, and the backend neither unloads
+nor preloads Ollama models. A chat turn during a reservation is logged as a
+conflict. A missing or expired file means free; an unreadable one counts as
+reserved (fail closed) and is logged.
+
+**Fixed: the chat model could still reload partly on the CPU after images.**
+The hand-back waited for ComfyUI's own memory to drop, but a preload seen with
+5.1 GB free on the card got 21 of 37 layers on the GPU. It now waits up to 30 s
+for `IMAGE_HANDBACK_FREE_BYTES` (8.5 GB) free on the card.
+
+**Correction to 1.8.0.** Its notes said `qwen3:8b` at `OLLAMA_NUM_CTX=32768`
+does not fit a 12 GB GPU. It does (about 7.3 GB). The CPU fallback seen then
+was this hand-back race: the model loaded two seconds after an image, before
+ComfyUI had freed its memory, and Ollama does not move a running model back to
+the GPU later. 24576 stays the default for the room it leaves next to ComfyUI.
+
 ## [1.8.0] - 2026-11-21
 
 **Generating images in the chat.** Ask for a picture ("draw a lighthouse at
