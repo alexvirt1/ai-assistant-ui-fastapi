@@ -11,6 +11,7 @@ import { getDocuments, subscribe } from "@/lib/documentStore";
 import { DocumentChips } from "./attachments/DocumentChips";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { ExportPdfButton } from "./chats/ExportPdfButton";
+import { StreamRecovery } from "./chats/StreamRecovery";
 import { ThreadActivity } from "./chats/ThreadActivity";
 import { MarkdownText } from "./MarkdownText";
 import { ModelPicker } from "./models/ModelPicker";
@@ -19,12 +20,14 @@ import {
   ToolExecutionIndicators,
   ToolRunningFallback,
 } from "./tools/ToolExecutionIndicators";
+import { GeneratedImageUI } from "./tools/GeneratedImage";
 
 export function MyAssistant({
   threadId,
   initialMessages,
   attachmentLimits,
   onRunningChange,
+  onTurnUnfinished,
 }: {
   /** Which stored conversation this pane is. Sent with every request so the
    *  backend attributes the turn to the right thread rather than falling back
@@ -35,6 +38,8 @@ export function MyAssistant({
   initialMessages?: RestoredMessage[];
   attachmentLimits?: AttachmentLimits;
   onRunningChange?: (isRunning: boolean) => void;
+  /** Called when a turn stops running without finishing - see lib/recovery. */
+  onTurnUnfinished?: () => void;
 }) {
   // Memoised rather than rebuilt per render: the runtime holds a reference to
   // the adapter, and churning it every render would be pointless work.
@@ -71,9 +76,11 @@ export function MyAssistant({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ToolExecutionIndicators />
+      <GeneratedImageUI />
       {onRunningChange ? (
         <ThreadActivity onRunningChange={onRunningChange} />
       ) : null}
+      {onTurnUnfinished ? <StreamRecovery onUnfinished={onTurnUnfinished} /> : null}
       <div className="flex h-full flex-col">
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
           <DocumentChips />
