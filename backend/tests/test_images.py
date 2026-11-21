@@ -42,6 +42,8 @@ class FakeComfy:
     def __init__(self, *, busy=False, reject=None, error=None, never_done=False,
                  files=None, nodes=None):
         self.busy = busy
+        self.own_running = False
+        self.outputs_before_completed = False
         self.reject = reject
         self.error = error
         self.never_done = never_done
@@ -67,7 +69,9 @@ class FakeComfy:
                 return httpx.Response(200, json={})
             return httpx.Response(200, json={node: {}})
         if path == "/queue" and request.method == "GET":
-            running = [["x", "other-job"]] if self.busy else []
+            running = [[1, "other-job", {}, {"client_id": "someone-else"}, []]] if self.busy else []
+            if self.own_running:
+                running.append([2, "p1", {}, {"client_id": comfyui.CLIENT_ID}, []])
             return httpx.Response(200, json={"queue_running": running, "queue_pending": []})
         if path == "/queue":
             self.cancelled = True
@@ -89,6 +93,9 @@ class FakeComfy:
                     "status_str": "error", "completed": False,
                     "messages": [["execution_error", {"exception_message": self.error}]]},
                     "outputs": {}}})
+            if self.outputs_before_completed and self.polls == 2:
+                return httpx.Response(200, json={"p1": {"status": {}, "outputs": {"10": {
+                    "images": [{"filename": "partial.png", "subfolder": "", "type": "temp"}]}}}})
             return httpx.Response(200, json={"p1": {
                 "status": {"status_str": "success", "completed": True},
                 "outputs": {"10": {"images": [
@@ -499,3 +506,40 @@ async def test_keep_alive_sends_data_chunks(monkeypatch):
     await asyncio.sleep(0.05)
     task.cancel()
     assert sent and all(d == {"heartbeat": True} for d in sent)
+
+
+async def test_own_job_on_queue_is_not_busy():
+    fake = FakeComfy()
+    fake.own_running = True
+    async with fake.client() as client:
+        await comfyui.free_memory(client)
+        assert fake.freed
+        png = await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert png.startswith(b"\x89PNG")
+
+
+async def test_waits_for_completed_not_just_outputs():
+    fake = FakeComfy()
+    fake.outputs_before_completed = True
+    async with fake.client() as client:
+        await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert fake.polls == 3
+
+
+async def test_wait_until_released_asks_again(monkeypatch):
+    monkeypatch.setattr(comfyui, "RELEASE_TIMEOUT", 0.0)
+    calls = {"free": 0, "stats": 0}
+
+    def handler(request):
+        if request.url.path == "/free":
+            calls["free"] += 1
+            return httpx.Response(200, json={})
+        calls["stats"] += 1
+        held = 9 * 2**30 if calls["free"] == 0 else 96 * 2**20
+        return httpx.Response(200, json={"devices": [
+            {"vram_total": 12 * 2**30, "vram_free": 12 * 2**30 - held, "torch_vram_total": held}]})
+
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+    async with client:
+        assert await comfyui.wait_until_released(client, timeout=5)
+    assert calls["free"] == 1

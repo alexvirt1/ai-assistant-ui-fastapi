@@ -231,11 +231,31 @@ def reset_cache() -> None:
     _available = None
 
 
+def _is_ours(item) -> bool:
+    """Whether a /queue entry was submitted by this app.
+
+    An entry is [number, prompt_id, workflow, extra_data, outputs, ...], with
+    the client_id sent to /prompt in extra_data.
+    """
+    try:
+        return item[3].get("client_id") == CLIENT_ID
+    except (IndexError, AttributeError, TypeError):
+        return False
+
+
 async def _queue_busy(client: httpx.AsyncClient) -> bool:
+    """Whether ComfyUI has someone else's work running or waiting.
+
+    Our own jobs do not count: ComfyUI reports a job's outputs in /history a
+    moment before it takes the job off the running list, so a check made right
+    after an image finished used to see that very job and decide AI-1 was busy
+    - skipping /free, so the chat model then loaded beside the image model.
+    """
     resp = await client.get("/queue")
     resp.raise_for_status()
     data = resp.json()
-    return bool(data.get("queue_running") or data.get("queue_pending"))
+    items = list(data.get("queue_running") or []) + list(data.get("queue_pending") or [])
+    return any(not _is_ours(item) for item in items)
 
 
 async def generate(model: ImageModel, req: ImageRequest,
@@ -290,7 +310,9 @@ async def _wait_for(client: httpx.AsyncClient, prompt_id: str) -> dict:
             status = entry.get("status") or {}
             if status.get("status_str") == "error":
                 raise ImageGenerationError(f"Generation failed: {_execution_error(status)}")
-            if status.get("completed") or entry.get("outputs"):
+            # Finished only when ComfyUI says so: outputs can show up while the
+            # job is still on the running list.
+            if status.get("completed") or status.get("status_str") == "success":
                 return entry.get("outputs") or {}
 
         if time.monotonic() > deadline:
@@ -377,7 +399,9 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
     timeout = RELEASE_TIMEOUT if timeout is None else timeout
     owns_client = client is None
     client = client or httpx.AsyncClient(base_url=base_url(), timeout=10)
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    asked_again = False
     try:
         while True:
             resp = await client.get("/system_stats")
@@ -393,6 +417,11 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
                 return True
             if time.monotonic() > deadline:
                 return False
+            # ComfyUI acts on /free between jobs, about 10 s after the last one
+            # (measured). Ask once more in case the first request was dropped.
+            if not asked_again and time.monotonic() - started > RELEASE_TIMEOUT / 2:
+                asked_again = True
+                await client.post("/free", json={"unload_models": True, "free_memory": True})
             await asyncio.sleep(POLL_INTERVAL or 0.5)
     except (httpx.HTTPError, ValueError):
         return False
