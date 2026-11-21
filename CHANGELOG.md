@@ -23,8 +23,30 @@ a preview node, so ComfyUI keeps no lasting copy. AI-1's GPU is shared: the chat
 model is unloaded while an image is generated, and ComfyUI is told to free its
 memory afterwards unless other jobs are waiting. If ComfyUI is busy with
 another job, the request fails at once with a message rather than queueing
-behind it. An image takes about 30-60 s, mostly loading the model, and the
-reply after it pays a cold load of the chat model.
+behind it. An image takes about 30-60 s, mostly loading the model. A batch
+("three more variants") hands the GPU back once, after the last image: ComfyUI
+is told to free its memory, the backend waits until it has, and preloads the
+chat model so the reply runs on the GPU. A warning is logged if the chat model
+still lands partly on the CPU.
+
+**Fixed: a slow turn showed an empty answer.** The Next.js proxy's fetch gives
+up on a response that sends nothing for 300 s, which a turn could do while the
+model worked out its tool calls. A running turn now sends a heartbeat every
+30 s; the chat ignores it.
+
+**A dropped stream recovers by itself.** When a turn stops on screen with a
+tool call still waiting, or with an error, the page says the connection was
+lost, waits for the backend to finish the turn (it always does), and reloads
+the chat. Seen live with a browser extension that cut the stream mid-turn.
+
+**Fixed: images the model wrote into an answer were loaded.** Asked for
+variants, the model once wrote Markdown images pointing at a public
+text-to-image site with the prompt in the URL, and the browser sent the prompt
+there. Markdown images in answers are now shown as a note ("Image not loaded:
+…") and never fetched.
+
+**Context window.** `.env.example` now sets `OLLAMA_NUM_CTX=24576`: at 32768,
+`qwen3:8b` no longer fits the lab's GPU and ran mostly on the CPU.
 
 **Upgrading.** Off unless `COMFYUI_BASE_URL` is set in `backend/.env` (see
 `.env.example`; also `IMAGE_MODEL`, `IMAGE_TIMEOUT_SECONDS`). No new
