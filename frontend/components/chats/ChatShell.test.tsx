@@ -5,6 +5,8 @@ import type { ChatDocument, ChatSummary, RestoredMessage } from "@/lib/chats";
 import { addDocument, clearDocuments, getDocuments } from "@/lib/documentStore";
 import { clearThreadCookie, readThreadCookie, setThreadCookie } from "@/lib/thread";
 
+import * as recovery from "@/lib/recovery";
+
 import { ChatShell } from "./ChatShell";
 
 // The real pane builds a chat runtime and would try to talk to /api/chat. What
@@ -14,11 +16,16 @@ vi.mock("../MyAssistant", () => ({
   MyAssistant: ({
     threadId,
     initialMessages,
+    onTurnUnfinished,
   }: {
     threadId?: string;
     initialMessages?: RestoredMessage[];
+    onTurnUnfinished?: () => void;
   }) => (
     <div data-testid="pane" data-thread={threadId}>
+      <button type="button" onClick={() => onTurnUnfinished?.()}>
+        simulate dropped stream
+      </button>
       {(initialMessages ?? []).map((message, index) => (
         <p key={index}>
           {message.content
@@ -305,5 +312,44 @@ describe("ChatShell", () => {
     );
 
     expect(getDocuments()).toHaveLength(0);
+  });
+});
+
+describe("ChatShell stream recovery", () => {
+  it("reloads the chat once the backend has finished the dropped turn", async () => {
+    setThreadCookie("t1");
+    const unfinished: RestoredMessage[] = [
+      said("user", "draw three"),
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "generate_image", args: {} }] },
+    ];
+    const finished: RestoredMessage[] = [
+      said("user", "draw three"),
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "c1", toolName: "generate_image", args: {}, result: "{}" },
+          { type: "text", text: "Here they are." },
+        ],
+      },
+    ];
+    const transcripts = { t1: [said("user", "draw three")] };
+    mockBackend({ transcripts });
+    // Poll without waiting between attempts.
+    const real = recovery.waitForSettledTurn;
+    const spy = vi
+      .spyOn(recovery, "waitForSettledTurn")
+      .mockImplementation((fetchMessages, signal) => real(fetchMessages, signal, { pollMs: 1, timeoutMs: 5000 }));
+
+    render(<ChatShell />);
+    await waitFor(() => expect(pane()).toHaveAttribute("data-thread", "t1"));
+
+    transcripts.t1 = unfinished;
+    await act(async () => screen.getByText("simulate dropped stream").click());
+    expect(screen.getByRole("status")).toHaveTextContent(/Connection to the answer was lost/);
+
+    transcripts.t1 = finished;
+    await waitFor(() => expect(screen.getByText("[generate_image]Here they are.")).toBeInTheDocument());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    spy.mockRestore();
   });
 });
