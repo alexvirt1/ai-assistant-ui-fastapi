@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from .chats import store as chat_store
 from .chats.messages import content_to_text
 from .identity import current_user_id
+from .images.comfyui import reservation as comfyui_reservation
 from .langgraph.agent import render_document_block
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,23 @@ class ChatRequest(BaseModel):
 
 # Seconds between heartbeats on a running turn's stream.
 HEARTBEAT_SECONDS = 30
+
+
+async def note_reservation_conflict(thread_id: str) -> None:
+    """Log a chat turn that starts while AI-1 holds a GPU reservation.
+
+    The turn goes ahead - chat requests are allowed during a reservation - but
+    it loads the chat model on AI-1, which can evict the model AI-1 reserved
+    the GPU for. Agreed with the AI-1 agent: such conflicts get reported, and
+    this line is what to report from.
+    """
+    try:
+        held = await comfyui_reservation()
+    except Exception:
+        return
+    if held is not None:
+        logger.warning("chat turn during a GPU reservation on AI-1 (%s); the chat model "
+                       "will be loaded there. Report this to the AI-1 agent.", held.describe())
 
 
 async def keep_alive(controller: RunController) -> None:
@@ -366,6 +384,7 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 logger.exception("could not touch thread %s", thread_id)
 
         async def run(controller: RunController):
+            asyncio.create_task(note_reservation_conflict(thread_id))
             heartbeat = asyncio.create_task(keep_alive(controller))
             try:
                 await run_turn(controller)

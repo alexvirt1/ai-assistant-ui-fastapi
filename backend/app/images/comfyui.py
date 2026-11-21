@@ -24,9 +24,12 @@ with someone else's work, generation fails at once with a message saying so.
 """
 
 import asyncio
+import json
+import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 import httpx
@@ -47,6 +50,8 @@ POLL_INTERVAL = 1.0
 
 # Identifies this app's jobs in ComfyUI's queue and history.
 CLIENT_ID = "ai-assistant-ui"
+
+logger = logging.getLogger(__name__)
 
 
 class ImageGenerationError(Exception):
@@ -382,21 +387,32 @@ async def free_memory(client: httpx.AsyncClient | None = None) -> None:
 
 
 # ComfyUI applies /free between jobs, not at once; how long to wait for it.
-RELEASE_TIMEOUT = 20.0
-# Below this much in use, ComfyUI counts as having let go of its models.
-RELEASED_BELOW_BYTES = 1024**3
+# 30 s, as agreed with the AI-1 agent: 10-20 s was seen not to be enough.
+RELEASE_TIMEOUT = 30.0
+
+
+def handback_free_bytes() -> int:
+    """Free VRAM needed before the chat model is preloaded after images.
+
+    8.5 GB by default, as agreed with the AI-1 agent: qwen3:8b at 24576 needs
+    about 6.7 GB plus llama.cpp's 1 GiB fit margin, and the card shows about
+    11.7 GB free when idle. Measured on the whole card, not ComfyUI's share: a
+    preload seen live with 5.1 GB free got only 21 of 37 layers on the GPU.
+    """
+    return int(float(os.getenv("IMAGE_HANDBACK_FREE_BYTES", str(8.5e9))))
 
 
 async def wait_until_released(client: httpx.AsyncClient | None = None,
                               timeout: float | None = None) -> bool:
-    """Wait for ComfyUI's GPU memory to drop after free_memory().
+    """Wait after free_memory() until the GPU has room for the chat model.
 
     Without this the chat model can reload while the image model still holds
     the GPU, and Ollama then puts most of it on the CPU - where it stays until
     it is unloaded, making every reply many times slower. Seen live.
-    True once released, False on timeout or error (callers carry on anyway).
+    True once there is room, False on timeout or error (callers carry on).
     """
     timeout = RELEASE_TIMEOUT if timeout is None else timeout
+    needed = handback_free_bytes()
     owns_client = client is None
     client = client or httpx.AsyncClient(base_url=base_url(), timeout=10)
     started = time.monotonic()
@@ -407,19 +423,13 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
             resp = await client.get("/system_stats")
             resp.raise_for_status()
             devices = resp.json().get("devices") or []
-            if devices and all(
-                d.get("vram_total", 0) - d.get("vram_free", 0) < RELEASED_BELOW_BYTES
-                # torch_vram_total is what ComfyUI itself holds; vram_free is
-                # the whole card, which includes Ollama's share.
-                or d.get("torch_vram_total", 0) < RELEASED_BELOW_BYTES
-                for d in devices
-            ):
+            if devices and devices[0].get("vram_free", 0) >= needed:
                 return True
             if time.monotonic() > deadline:
                 return False
             # ComfyUI acts on /free between jobs, about 10 s after the last one
             # (measured). Ask once more in case the first request was dropped.
-            if not asked_again and time.monotonic() - started > RELEASE_TIMEOUT / 2:
+            if not asked_again and time.monotonic() - started > timeout / 3:
                 asked_again = True
                 await client.post("/free", json={"unload_models": True, "free_memory": True})
             await asyncio.sleep(POLL_INTERVAL or 0.5)
@@ -428,3 +438,79 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
     finally:
         if owns_client:
             await client.aclose()
+
+
+# --- GPU reservations by the AI-1 agent ------------------------------------
+#
+# Agreed protocol: when AI-1 needs its GPU to itself (long renders, or scripts
+# that use Ollama outside ComfyUI's queue), its agent writes ComfyUI userdata
+# gpu-reservation.json = {"holder": "ai-1", "until": "<UTC ISO, Z>", "reason"}.
+# While that is valid the chatbot generates no images and makes no Ollama
+# load/unload calls of its own (normal chat requests still go through). A
+# missing or expired file means free; a file that cannot be read means
+# reserved until it is fixed (fail closed).
+
+RESERVATION_PATH = "/api/userdata/gpu-reservation.json"
+
+
+@dataclass(frozen=True)
+class Reservation:
+    holder: str
+    until: datetime | None  # None: the file could not be read
+    reason: str
+
+    @property
+    def unreadable(self) -> bool:
+        return self.until is None
+
+    def describe(self) -> str:
+        if self.unreadable:
+            return ("AI-1's GPU reservation file could not be read, so AI-1 counts as "
+                    "reserved until it is fixed")
+        local = self.until.astimezone().strftime("%H:%M")
+        why = f" ({self.reason})" if self.reason else ""
+        return f"AI-1's GPU is reserved by {self.holder or 'AI-1'} until {local}{why}"
+
+
+def parse_reservation(text: str, now: datetime | None = None) -> Reservation | None:
+    """The reservation in force, or None if it has expired."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        data = json.loads(text)
+        until_text = data["until"]
+        if not isinstance(until_text, str) or not until_text.endswith("Z"):
+            raise ValueError("until must be UTC ending in Z")
+        until = datetime.fromisoformat(until_text[:-1] + "+00:00")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return Reservation(holder="", until=None, reason="")
+    if until <= now:
+        return None
+    return Reservation(holder=str(data.get("holder") or ""), until=until,
+                       reason=str(data.get("reason") or ""))
+
+
+async def reservation(client: httpx.AsyncClient | None = None) -> Reservation | None:
+    """AI-1's GPU reservation in force now, if any.
+
+    None when there is no file, it has expired, or ComfyUI cannot be reached
+    (an unreachable ComfyUI fails generation on its own).
+    """
+    if not base_url():
+        return None
+    owns_client = client is None
+    client = client or httpx.AsyncClient(base_url=base_url(), timeout=10)
+    try:
+        resp = await client.get(RESERVATION_PATH)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        found = parse_reservation(resp.text)
+    except httpx.HTTPError:
+        return None
+    finally:
+        if owns_client:
+            await client.aclose()
+    if found is not None and found.unreadable:
+        logger.warning("AI-1's gpu-reservation.json is unreadable; treating AI-1 as reserved "
+                       "until it is fixed. Tell the owner.")
+    return found

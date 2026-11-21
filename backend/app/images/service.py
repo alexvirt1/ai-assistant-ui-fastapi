@@ -76,6 +76,12 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
     request = ImageRequest(prompt=prompt, width=width, height=height,
                            seed=seed, steps=spec.default_steps)
 
+    # Agreed with the AI-1 agent: while it holds a reservation, no images and
+    # no unloading of its Ollama models.
+    held = await comfyui.reservation()
+    if held is not None:
+        raise ImageGenerationError(f"{held.describe()}. Try again after that.")
+
     global _pending
     _pending += 1
     try:
@@ -111,7 +117,15 @@ async def _unload_chat_models() -> None:
 
 
 async def _return_gpu_to_chat() -> None:
-    """Free ComfyUI's memory, wait for it, then preload the chat model."""
+    """Free ComfyUI's memory, wait for it, then preload the chat model.
+
+    Skipped when AI-1 took a reservation while the images ran: then the GPU is
+    its to use, and preloading the chat model would get in the way.
+    """
+    held = await comfyui.reservation()
+    if held is not None:
+        logger.info("not handing the GPU back to the chat model: %s", held.describe())
+        return
     await comfyui.free_memory()
     if not await comfyui.wait_until_released():
         logger.warning("ComfyUI did not release GPU memory in time; the chat model may load partly on the CPU")

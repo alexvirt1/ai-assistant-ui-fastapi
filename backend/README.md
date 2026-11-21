@@ -100,6 +100,16 @@ model is unloaded before an image and reloaded after the last one of a batch,
 once ComfyUI has released its memory. Another client's job on ComfyUI makes the
 request fail at once instead of queueing.
 
+**Sharing the GPU host with its owner.** The AI-1 agent can reserve the GPU by
+writing ComfyUI userdata `gpu-reservation.json`
+(`{"holder": "ai-1", "until": "2026-11-21T18:00:00Z", "reason": "..."}`, UTC).
+While it is in force the app generates no images ("AI-1's GPU is reserved
+until 13:00 (...)") and makes no Ollama load or unload calls of its own; chat
+turns still run, and one that starts during a reservation is logged as a
+conflict. A missing or expired file means free; an unreadable one counts as
+reserved until fixed. After images, the chat model is preloaded only once the
+card has `IMAGE_HANDBACK_FREE_BYTES` free (default 8.5 GB), waiting up to 30 s.
+
 Images are stored in the `chat_images` table and deleted with their chat.
 
 | Endpoint | |
