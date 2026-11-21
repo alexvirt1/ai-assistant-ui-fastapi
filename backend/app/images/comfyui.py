@@ -109,7 +109,7 @@ def _z_image_turbo(req: ImageRequest) -> dict:
 
 def _flux2_klein(req: ImageRequest) -> dict:
     # Settings from AI-1's 08_klein_poster workflow, without its reference
-    # images: cfg 1, euler, the Flux2 scheduler at 4 steps.
+    # images: cfg 1, euler, the Flux2 scheduler (8 steps here, 4 there).
     return {
         "1": {"class_type": "UNETLoader",
               "inputs": {"unet_name": "flux-2-klein-4b.safetensors",
@@ -163,7 +163,9 @@ MODELS: dict[str, ImageModel] = {
                    "ConditioningZeroOut", "CFGGuider", "KSamplerSelect",
                    "Flux2Scheduler", "RandomNoise", "EmptyFlux2LatentImage",
                    "SamplerCustomAdvanced", "VAEDecode", "PreviewImage"),
-            default_steps=4,
+            # The distilled model's usual 4 steps lost detail on long prompts
+            # (tested live); 8 keeps more of it at roughly twice the sampling time.
+            default_steps=8,
             build=_flux2_klein,
         ),
     )
