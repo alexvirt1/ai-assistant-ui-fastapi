@@ -70,6 +70,8 @@ _HINT = (
     "image, photo, illustration, logo or similar, call generate_image with a "
     "detailed English description; translate the request if needed and keep all "
     "its details. Pick size portrait/landscape/wide when the subject suggests it. "
+    "For paintings, drawings or other art styles use model flux2-klein; leave the "
+    "model empty for photos. "
     "The chat shows the image itself: after the tool returns, reply in one or two "
     "sentences and never write links, file names, image ids or markdown images. "
     "If the tool returns an error, tell the user what it says. When asked which "

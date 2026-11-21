@@ -1,6 +1,10 @@
 # Text-to-image (T2I): implementation plan
 
-Status: **draft, awaiting decisions** (see the last section). Target release: 1.8.0.
+Status: **implemented on this branch** (option A: ComfyUI provider), not yet deployed. Target release: 1.8.0.
+
+Both workflows were tested against AI-1's ComfyUI on 2026-11-21: z-image-turbo 56 s and
+flux2-klein 35 s for 1024×1024, cold loads included. The Ollama provider (phase 4) and an
+image-model picker in the header are not built yet.
 Branch: `text-to-image`, merged into `dev`, then `dev` into `main`, as for earlier features.
 
 ## Goal

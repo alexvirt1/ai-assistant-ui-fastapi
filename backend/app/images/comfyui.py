@@ -40,9 +40,9 @@ def timeout_seconds() -> float:
     return float(os.getenv("IMAGE_TIMEOUT_SECONDS", "180"))
 
 
-# Seconds between /history polls. A Z-Image Turbo image takes 10-20 s, so a
-# second of latency at the end is not noticeable, and it keeps the polling to
-# a few dozen cheap requests.
+# Seconds between /history polls. An image takes 30-60 s on AI-1, most of it
+# loading the model from disk (it is freed after every image), so a second of
+# latency at the end is not noticeable.
 POLL_INTERVAL = 1.0
 
 # Identifies this app's jobs in ComfyUI's queue and history.
@@ -143,7 +143,7 @@ MODELS: dict[str, ImageModel] = {
     for m in (
         ImageModel(
             name="z-image-turbo",
-            description="Fast photorealistic and illustrated images (about 10-20 s). The default.",
+            description="Photorealistic images; tends towards photos even when a painting style is asked for. The default.",
             files={"diffusion_models": "z_image_turbo_int8_convrot.safetensors",
                    "text_encoders": "qwen_3_4b_fp8_mixed.safetensors",
                    "vae": "ae.safetensors"},
@@ -155,7 +155,7 @@ MODELS: dict[str, ImageModel] = {
         ),
         ImageModel(
             name="flux2-klein",
-            description="FLUX.2 Klein 4B: good composition and text in images, 4 steps.",
+            description="FLUX.2 Klein 4B: follows art styles (watercolour, illustration) closely; good with text in images.",
             files={"diffusion_models": "flux-2-klein-4b.safetensors",
                    "text_encoders": "qwen_3_4b_fp8_mixed.safetensors",
                    "vae": "flux2-vae.safetensors"},
