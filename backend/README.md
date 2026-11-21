@@ -80,7 +80,7 @@ Copy `.env.example` to `.env`. The model and server variables:
 | --- | --- |
 | `OLLAMA_MODEL` | Model name (default `qwen3:8b`). |
 | `OLLAMA_BASE_URL` | Ollama endpoint. |
-| `OLLAMA_NUM_CTX` | Context window passed to the model (`.env.example`: `24576`). It must fit the GPU together with the model: on the lab's 12 GB GPU, `qwen3:8b` at `32768` lands mostly on the CPU (check with `ollama ps`), at `24576` fully on the GPU. |
+| `OLLAMA_NUM_CTX` | Context window passed to the model (`.env.example`: `24576`). `qwen3:8b` needs about 6.7 GB at `24576` and 7.3 GB at `32768`; both fit a free 12 GB GPU, and `24576` leaves more room next to ComfyUI. Check that `ollama ps` shows 100% GPU: a model loaded while the GPU was busy stays partly on the CPU until it is unloaded. |
 | `HISTORY_MAX_TOKENS` | Token budget for conversation history (defaults to a third of `OLLAMA_NUM_CTX`, so the two scale together). |
 | `OLLAMA_KEEP_ALIVE` | How long the VM holds a model in memory (default `30m`). |
 | `MODELS_CONFIG` | Path to the model-roles YAML (default `backend/models.yaml`). |
@@ -99,6 +99,16 @@ ComfyUI has its files and nodes. The GPU is shared with Ollama, so the chat
 model is unloaded before an image and reloaded after the last one of a batch,
 once ComfyUI has released its memory. Another client's job on ComfyUI makes the
 request fail at once instead of queueing.
+
+**Sharing the GPU host with its owner.** The AI-1 agent can reserve the GPU by
+writing ComfyUI userdata `gpu-reservation.json`
+(`{"holder": "ai-1", "until": "2026-11-21T18:00:00Z", "reason": "..."}`, UTC).
+While it is in force the app generates no images ("AI-1's GPU is reserved
+until 13:00 (...)") and makes no Ollama load or unload calls of its own; chat
+turns still run, and one that starts during a reservation is logged as a
+conflict. A missing or expired file means free; an unreadable one counts as
+reserved until fixed. After images, the chat model is preloaded only once the
+card has `IMAGE_HANDBACK_FREE_BYTES` free (default 8.5 GB), waiting up to 30 s.
 
 Images are stored in the `chat_images` table and deleted with their chat.
 
