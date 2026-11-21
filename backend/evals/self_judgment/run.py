@@ -335,10 +335,12 @@ def regrade(rows: list[dict]) -> list[dict]:
 
 
 def report_from_files(paths: list[str]) -> str:
-    """Report on saved runs, regraded. Model names come from the file names."""
+    """Report on saved runs, regraded. Label a run with PATH=LABEL; by default
+    the model name comes from the file name."""
     summaries, per_category = [], {}
-    for path in paths:
-        name = Path(path).stem.split("-", 2)[-1]
+    for item in paths:
+        path, _, label = item.partition("=")
+        name = label or Path(path).stem.split("-", 2)[-1]
         rows = regrade([json.loads(line) for line in Path(path).read_text().splitlines() if line])
         summaries.append(summarise(name, rows))
         per_category[name] = rows
@@ -356,7 +358,7 @@ def main(argv=None) -> None:
                         help="output cap per call (default 1024, or 4096 with --think)")
     parser.add_argument("--repeat-penalty", type=float, default=None,
                         help="e.g. 1.1; off by default to test the models as the app runs them")
-    parser.add_argument("--report", nargs="+", metavar="RESULTS.jsonl",
+    parser.add_argument("--report", nargs="+", metavar="RESULTS.jsonl[=LABEL]",
                         help="no model calls: regrade saved results and print the report")
     args = parser.parse_args(argv)
     if args.report:

@@ -74,6 +74,8 @@ Rules, rather than the 8B model's judgement alone:
   and dates).
 - **Local tools first:** a calculator and a date tool handle the arithmetic and date questions the
   model gets wrong, without a cloud call.
+- **Think harder locally before the cloud:** for code and counting tasks, re-run the turn with
+  thinking on (fixed all such errors in the eval, at about 13× the time) before offering the cloud.
 
 Escalation shows an approval card: "Local model suggests Claude Sonnet: *needs deeper code review*.
 Sends ~4,200 tokens (≈ $0.03). [Send to cloud] [Keep local]". Sending starts a new run of the
