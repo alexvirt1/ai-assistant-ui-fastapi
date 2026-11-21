@@ -22,6 +22,14 @@ characters. Three weaknesses:
 
 The backend log shows no use of either tool.
 
+## Evidence: how well local models judge their limits
+
+Measured before designing the triggers: [docs/evals/self-judgment.md](evals/self-judgment.md).
+`qwen3:8b` escalates only 58% of the questions it gets wrong, its confidence is no better than
+chance, and neither of the larger models on AI-1 judges better. So escalation is driven by rules
+and the user's choice (below), the local model gets calculator and date tools for the errors it
+makes most, and answers are length-capped, with hitting the cap treated as a reason to escalate.
+
 ## Design
 
 ### 1. Three modes per chat
@@ -62,6 +70,10 @@ Rules, rather than the 8B model's judgement alone:
   can't do something.
 - **Task signals:** large code generation or review, long multi-step reasoning, or a conversation
   longer than the local context window.
+- **Runaway answers:** the local answer hits its output cap (seen in the eval for hard arithmetic
+  and dates).
+- **Local tools first:** a calculator and a date tool handle the arithmetic and date questions the
+  model gets wrong, without a cloud call.
 
 Escalation shows an approval card: "Local model suggests Claude Sonnet: *needs deeper code review*.
 Sends ~4,200 tokens (≈ $0.03). [Send to cloud] [Keep local]". Sending starts a new run of the

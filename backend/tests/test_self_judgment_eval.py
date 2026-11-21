@@ -55,7 +55,7 @@ def test_auroc():
 
 
 def test_summarise_escalation_metrics():
-    row = dict(category="x", difficulty="hard", expected="1", seconds=1.0, tokens_out=1,
+    row = dict(category="x", difficulty="hard", expected="1", seconds=1.0, tokens_out=1, a_ran_away=False, b_ran_away=False,
                a_unknown=False, b_reason=None, b_answer=None, confidence=50)
     rows = [
         {**row, "id": "a", "expect_escalate": False, "a_correct": False, "b_escalated": True, "b_correct": None},
@@ -68,3 +68,12 @@ def test_summarise_escalation_metrics():
     assert s["escalation_precision"] == 50    # 1 of its 2 escalations was needed
     assert s["wasted_escalations"] == 1
     assert s["confidently_wrong"] == 1
+
+
+def test_honest_refusal_counts_for_unknowable_questions():
+    cases = by_id()
+    assert grade(cases["unknowable-2"], "I don't have access to your email inbox, so I cannot determine that.")
+    assert grade(cases["unknowable-0"], "UNKNOWN")
+    assert not grade(cases["unknowable-0"], "189.50")
+    # ...but not for questions that do have an answer.
+    assert not grade(cases["arith-easy-0"], "I cannot calculate that.")
