@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AttachmentLimits } from "@/lib/attachments";
 import {
@@ -9,6 +9,7 @@ import {
   type RestoredMessage,
 } from "@/lib/chats";
 import { setDocuments } from "@/lib/documentStore";
+import { waitForSettledTurn } from "@/lib/recovery";
 import { newThreadId, readThreadCookie, setThreadCookie } from "@/lib/thread";
 
 import { MyAssistant } from "../MyAssistant";
@@ -34,8 +35,19 @@ export function ChatShell({
   const [isRunning, setIsRunning] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Bumped to remount the pane with a recovered transcript (same thread).
+  const [paneVersion, setPaneVersion] = useState(0);
+  const [recovering, setRecovering] = useState(false);
+  const recovery = useRef<AbortController | null>(null);
+
+  const stopRecovery = useCallback(() => {
+    recovery.current?.abort();
+    recovery.current = null;
+    setRecovering(false);
+  }, []);
 
   const startNewChat = useCallback(() => {
+    stopRecovery();
     const id = newThreadId();
     setThreadCookie(id);
     // A new conversation has nothing attached. Without this, a document from
@@ -45,7 +57,7 @@ export function ChatShell({
     setInitialMessages([]);
     setThreadId(id);
     setError(null);
-  }, []);
+  }, [stopRecovery]);
 
   const openChat = useCallback(
     async (id: string) => {
@@ -58,6 +70,7 @@ export function ChatShell({
           fetchChatMessages(id),
           fetchChatDocuments(id),
         ]);
+        stopRecovery();
         setThreadCookie(id);
         setDocuments(documents);
         setInitialMessages(messages);
@@ -67,7 +80,7 @@ export function ChatShell({
         setError("Could not open that chat.");
       }
     },
-    [threadId],
+    [threadId, stopRecovery],
   );
 
   // Restore whatever the browser was last looking at, or start fresh.
@@ -115,14 +128,41 @@ export function ChatShell({
     [threadId, startNewChat],
   );
 
+  // A turn stopped on screen before it finished - usually its stream was cut
+  // (seen with a browser extension). The backend finishes it anyway, so wait
+  // for the stored transcript to settle and reload the pane from it.
+  const handleTurnUnfinished = useCallback(() => {
+    if (!threadId) return;
+    recovery.current?.abort();
+    const controller = new AbortController();
+    recovery.current = controller;
+    setRecovering(true);
+    const id = threadId;
+    void waitForSettledTurn(() => fetchChatMessages(id), controller.signal).then(
+      (messages) => {
+        if (controller.signal.aborted) return;
+        recovery.current = null;
+        setRecovering(false);
+        if (messages) {
+          setInitialMessages(messages);
+          setPaneVersion((version) => version + 1);
+        }
+      },
+    );
+  }, [threadId]);
+
+  useEffect(() => () => recovery.current?.abort(), []);
+
   const handleRunningChange = useCallback((running: boolean) => {
+    // A new turn supersedes a recovery: reloading would wipe it.
+    if (running) stopRecovery();
     setIsRunning(running);
     // Refetched on both edges. On start, so a brand-new chat appears in the
     // list while it is being answered; on end, to pick up the title the
     // backend derived and the new ordering. If the start refetch races the
     // backend's own registration and misses, the end refetch corrects it.
     setRefreshKey((key) => key + 1);
-  }, []);
+  }, [stopRecovery]);
 
   return (
     <div className="flex h-full">
@@ -145,16 +185,26 @@ export function ChatShell({
             {error}
           </p>
         ) : null}
+        {recovering ? (
+          <p
+            role="status"
+            className="shrink-0 border-b border-gray-200 px-4 py-2 text-sm text-gray-600 dark:border-gray-800 dark:text-gray-300"
+          >
+            Connection to the answer was lost. Waiting for it to finish on the
+            server, then reloading this chat…
+          </p>
+        ) : null}
         {threadId ? (
           <div className="min-h-0 flex-1">
           <MyAssistant
             // Remount on switch: initialMessages is read once, when the
             // runtime is created.
-            key={threadId}
+            key={`${threadId}:${paneVersion}`}
             threadId={threadId}
             initialMessages={initialMessages}
             attachmentLimits={attachmentLimits}
             onRunningChange={handleRunningChange}
+            onTurnUnfinished={handleTurnUnfinished}
           />
           </div>
         ) : null}

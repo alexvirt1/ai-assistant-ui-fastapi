@@ -26,6 +26,12 @@ class ResidentModel:
     tag: str
     size_bytes: int
     expires_at: str
+    # How much of it is on the GPU; the rest runs on the CPU, many times slower.
+    vram_bytes: int = 0
+
+    @property
+    def fully_on_gpu(self) -> bool:
+        return self.vram_bytes >= self.size_bytes
 
     @property
     def size_gb(self) -> float:
@@ -85,6 +91,7 @@ async def resident() -> list[ResidentModel]:
             tag=m.get("name", ""),
             size_bytes=m.get("size", 0),
             expires_at=m.get("expires_at", ""),
+            vram_bytes=m.get("size_vram", 0),
         )
         for m in data.get("models", [])
     ]
@@ -109,16 +116,34 @@ async def ensure(tag: str) -> bool:
     return tag in await list_available()
 
 
-async def warm(tag: str) -> bool:
+async def warm(tag: str, num_ctx: int | None = None) -> bool:
     """Preload a model so the next real call does not pay the cold load.
 
-    An empty prompt asks Ollama to load the weights and stop.
+    An empty prompt asks Ollama to load the weights and stop. Pass the context
+    size the chat will use: Ollama reloads a model whose num_ctx differs, so
+    warming at its default size would be wasted.
     """
+    body: dict = {"model": tag, "prompt": "", "keep_alive": KEEP_ALIVE}
+    if num_ctx:
+        body["options"] = {"num_ctx": num_ctx}
     try:
         async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(f"{BASE_URL}/api/generate", json=body)
+            resp.raise_for_status()
+    except httpx.HTTPError:
+        return False
+    return True
+
+
+async def unload(tag: str) -> bool:
+    """Drop a model from the VM's memory now, rather than when keep_alive ends.
+
+    Used to make room on the GPU for image generation, which shares it.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(
-                f"{BASE_URL}/api/generate",
-                json={"model": tag, "prompt": "", "keep_alive": KEEP_ALIVE},
+                f"{BASE_URL}/api/generate", json={"model": tag, "keep_alive": 0}
             )
             resp.raise_for_status()
     except httpx.HTTPError:
