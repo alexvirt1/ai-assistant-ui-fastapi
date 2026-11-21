@@ -20,6 +20,12 @@ The hand-back waited for ComfyUI's own memory to drop, but a preload seen with
 5.1 GB free on the card got 21 of 37 layers on the GPU. It now waits up to 30 s
 for `IMAGE_HANDBACK_FREE_BYTES` (8.5 GB) free on the card.
 
+**Correction to 1.8.0.** Its notes said `qwen3:8b` at `OLLAMA_NUM_CTX=32768`
+does not fit a 12 GB GPU. It does (about 7.3 GB). The CPU fallback seen then
+was this hand-back race: the model loaded two seconds after an image, before
+ComfyUI had freed its memory, and Ollama does not move a running model back to
+the GPU later. 24576 stays the default for the room it leaves next to ComfyUI.
+
 ## [1.8.0] - 2026-11-21
 
 **Generating images in the chat.** Ask for a picture ("draw a lighthouse at
