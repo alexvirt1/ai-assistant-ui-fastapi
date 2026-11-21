@@ -13,6 +13,8 @@ from .chats import store as chat_store
 from .chats.routes import make_chats_router
 from .documents import store as document_store
 from .documents.routes import router as documents_router
+from .images import store as image_store
+from .images.routes import router as images_router
 from .langgraph.agent import build_graph
 from .models.routes import router as models_router
 from .tools.mcp.loader import connect_mcp_servers
@@ -66,6 +68,8 @@ async def lifespan(app: FastAPI):
     # are no-ops without DATABASE_URL, so startup degrades rather than failing.
     await document_store.setup()
     await chat_store.setup()
+    # After the chat registry: chat_images references chat_threads.
+    await image_store.setup()
 
     add_langgraph_route(app, graph, "/api/chat")
     # Registered here rather than at import: the history endpoint reads the
@@ -93,6 +97,7 @@ app.add_middleware(
 # routes do not depend on the graph.
 app.include_router(documents_router)
 app.include_router(models_router)
+app.include_router(images_router)
 
 if __name__ == "__main__":
     import uvicorn

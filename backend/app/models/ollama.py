@@ -126,6 +126,22 @@ async def warm(tag: str) -> bool:
     return True
 
 
+async def unload(tag: str) -> bool:
+    """Drop a model from the VM's memory now, rather than when keep_alive ends.
+
+    Used to make room on the GPU for image generation, which shares it.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(
+                f"{BASE_URL}/api/generate", json={"model": tag, "keep_alive": 0}
+            )
+            resp.raise_for_status()
+    except httpx.HTTPError:
+        return False
+    return True
+
+
 async def validate() -> dict[str, str]:
     """Check every configured role against the VM.
 

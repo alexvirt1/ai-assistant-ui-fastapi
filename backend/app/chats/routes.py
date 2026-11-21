@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..identity import current_user_id
+from ..images import store as image_store
 from . import store as chat_store
 from .export import Diagram, content_disposition, diagram_key, pdf_filename, render_chat_pdf
 from .messages import to_core_messages
@@ -151,8 +152,10 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         title = thread.title or "Untitled chat"
         # Off the event loop: laying out a long conversation is CPU-bound, and
         # a streaming answer in another tab would stall while it ran.
+        stored = await image_store.get_thread_images(thread_id, user_id)
+        images = {key: (image.png, image.prompt) for key, image in stored.items()}
         pdf = await run_in_threadpool(
-            render_chat_pdf, title, to_core_messages(messages), None, diagrams
+            render_chat_pdf, title, to_core_messages(messages), None, diagrams, images
         )
         return Response(
             content=pdf,

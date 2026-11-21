@@ -275,6 +275,8 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                     {
                         "configurable": {
                             "thread_id": thread_id,
+                            # For tools that store per-user data (images).
+                            "user_id": user_id,
                             "system": request.system,
                             "frontend_tools": request.tools,
                         }

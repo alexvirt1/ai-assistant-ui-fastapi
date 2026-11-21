@@ -12,6 +12,7 @@ answer contains.
 Kept free of FastAPI so it can be tested without it.
 """
 
+import json
 import logging
 import re
 import unicodedata
@@ -23,6 +24,7 @@ from urllib.parse import quote
 
 from fpdf import FPDF, FontFace, TextStyle
 from markdown_it import MarkdownIt
+from PIL import Image
 from markdown_it.common.utils import escapeHtml
 from markdown_it.token import Token
 from mdit_py_plugins.dollarmath import dollarmath_plugin
@@ -416,16 +418,65 @@ def _tool_line(pdf: _ChatPDF, names: list[str]) -> None:
     pdf.set_font(SANS, size=BODY_SIZE)
 
 
+# Generated images are printed at most this wide, so a square one leaves room
+# on the page for the text around it.
+IMAGE_MAX_WIDTH_MM = 120
+
+
+def generated_image_id(part: dict) -> str | None:
+    """The image id in a finished generate_image call, if it succeeded."""
+    if part.get("toolName") != "generate_image" or part.get("isError"):
+        return None
+    try:
+        result = json.loads(part.get("result") or "")
+    except (TypeError, ValueError):
+        return None
+    image_id = result.get("image_id") if isinstance(result, dict) else None
+    return str(image_id) if image_id else None
+
+
+def _generated_image(pdf: _ChatPDF, png: bytes | None, prompt: str) -> None:
+    """A generated image, centred, with its prompt underneath."""
+    if png is None:
+        pdf.set_font(SANS, "I", 9)
+        pdf.set_text_color(MUTED)
+        pdf.multi_cell(0, 5, "[Image deleted]", align="L", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0)
+        pdf.set_font(SANS, size=BODY_SIZE)
+        return
+    with Image.open(BytesIO(png)) as image:
+        px_width, px_height = image.size
+    width = min(pdf.epw, IMAGE_MAX_WIDTH_MM)
+    height = width * px_height / px_width
+    scale = min(1.0, (pdf.eph - 12) / height)
+    width, height = width * scale, height * scale
+    gap = 2
+    if pdf.get_y() + gap + height > pdf.page_break_trigger:
+        pdf.add_page()
+    y = pdf.get_y() + gap
+    pdf.image(BytesIO(png), x=pdf.l_margin + (pdf.epw - width) / 2, y=y, w=width, h=height)
+    pdf.set_xy(pdf.l_margin, y + height + 1)
+    pdf.set_font(SANS, "I", 8.5)
+    pdf.set_text_color(MUTED)
+    pdf.multi_cell(0, 4.5, prompt, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0)
+    pdf.set_font(SANS, size=BODY_SIZE)
+    pdf.ln(gap)
+
+
 def render_chat_pdf(
     title: str,
     messages: list[dict],
     exported_at: datetime | None = None,
     diagrams: dict[str, Diagram] | None = None,
+    images: dict[str, tuple[bytes | None, str]] | None = None,
 ) -> bytes:
     """The conversation as PDF bytes.
 
     `messages` is to_core_messages output. `diagrams` are images for ```mermaid
-    blocks, keyed by diagram_key(source); a block without one shows its source. Tool calls are named but their
+    blocks, keyed by diagram_key(source); a block without one shows its source.
+    `images` are generated images by id, as (png or None once deleted, prompt);
+    a generate_image call is printed as its image. Other tool calls are named but their
     arguments and results are left out: a document search returns ~11 000
     tokens of passages, which would bury the conversation it was part of.
     """
@@ -468,6 +519,13 @@ def render_chat_pdf(
         tools: list[str] = []
         for part in parts:
             if part.get("type") == "tool-call":
+                image_id = generated_image_id(part)
+                if image_id is not None and images is not None and image_id in images:
+                    if tools:
+                        _tool_line(pdf, tools)
+                        tools = []
+                    _generated_image(pdf, *images[image_id])
+                    continue
                 tools.append(part.get("toolName", "tool"))
                 continue
             # Consecutive calls share one line, ahead of the text they led to.

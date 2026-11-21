@@ -11,6 +11,11 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+# Tools whose finished call renders something in the chat (see
+# frontend/components/tools/GeneratedImage.tsx), unlike the rest, whose
+# indicator disappears once they complete.
+VISIBLE_TOOLS = frozenset({"generate_image"})
+
 
 def content_to_text(content: Any) -> str:
     """Flatten LangChain message content to plain text.
@@ -79,7 +84,13 @@ def to_core_messages(messages: list) -> list[dict]:
     def end_assistant_turn() -> None:
         # Text is what makes a turn worth showing: the tool parts render
         # nothing once complete, so a turn without text is a blank bubble.
-        if any(part["type"] == "text" for part in turn):
+        # The exception is a tool whose card *is* the content - a generated
+        # image - which must survive a run cancelled before the reply.
+        if any(
+            part["type"] == "text"
+            or (part.get("toolName") in VISIBLE_TOOLS and "result" in part)
+            for part in turn
+        ):
             out.append({"role": "assistant", "content": list(turn)})
         turn.clear()
 
