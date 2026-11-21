@@ -103,3 +103,13 @@ describe("MarkdownText", () => {
     expect(screen.getByText(/Section 148/)).toBeInTheDocument();
   });
 });
+
+describe("Markdown images", () => {
+  it("are shown as a note and never loaded", () => {
+    const { container } = render(
+      <Answer text={"Here it is:\n\n![a red fox](https://image.pollinations.ai/prompt/a%20red%20fox)"} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText(/Image not loaded: a red fox \(image\.pollinations\.ai\)/)).toBeTruthy();
+  });
+});

@@ -72,8 +72,10 @@ _HINT = (
     "its details. Pick size portrait/landscape/wide when the subject suggests it. "
     "For paintings, drawings or other art styles use model flux2-klein; leave the "
     "model empty for photos. "
-    "The chat shows the image itself: after the tool returns, reply in one or two "
-    "sentences and never write links, file names, image ids or markdown images. "
+    "Only generate_image can make images: never invent image URLs or use outside "
+    "image services such as pollinations.ai. The chat shows each generated image "
+    "itself: after the tool returns, reply in one or two sentences and never write "
+    "links, URLs, file names, image ids or markdown images (![...](...)). "
     "If the tool returns an error, tell the user what it says. When asked which "
     "image models exist, call list_image_models."
 )
