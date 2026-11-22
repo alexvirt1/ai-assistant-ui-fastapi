@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
@@ -19,6 +20,8 @@ from pydantic import BaseModel
 from .chats import store as chat_store
 from .chats.messages import content_to_text
 from .identity import current_user_id
+from .cloud import models as cloud_models
+from .cloud import usage as cloud_usage
 from .images.comfyui import reservation as comfyui_reservation
 from .langgraph.agent import render_document_block
 
@@ -168,10 +171,79 @@ class ChatRequest(BaseModel):
     # the conversation is trimmed away as the thread grows.
     documents: Optional[List[AttachedDocument]] = []
     messages: List[LanguageModelV1Message]
+    # Hybrid mode (app/cloud). The chat's mode and document permission are
+    # stored on the thread when sent; `escalate` sends this one turn to the
+    # cloud model (the user approved an escalation in auto mode).
+    mode: Optional[Literal["local", "auto", "cloud"]] = None
+    allowCloudDocuments: Optional[bool] = None
+    escalate: Optional[bool] = None
 
 
 # Seconds between heartbeats on a running turn's stream.
 HEARTBEAT_SECONDS = 30
+
+
+async def decide_route(request: "ChatRequest", thread_id: str, user_id: str) -> tuple[dict, str | None]:
+    """Which model answers this turn, and a note to show if not the one asked for.
+
+    Returns the hybrid-mode keys for the run's configurable (see turn_route in
+    app/langgraph/agent.py). Stores the chat's mode and document permission
+    when the request carries them.
+    """
+    mode, allow_documents = request.mode, request.allowCloudDocuments
+    thread = None
+    if chat_store.database_url():
+        try:
+            if mode is not None or allow_documents is not None:
+                thread = await chat_store.update_thread(
+                    thread_id, user_id, cloud_mode=mode, cloud_documents=allow_documents)
+            else:
+                thread = await chat_store.get_thread(thread_id, user_id)
+        except Exception:
+            logger.exception("could not read or store hybrid settings for %s", thread_id)
+    if thread is not None:
+        mode, allow_documents = thread.cloud_mode, thread.cloud_documents
+    mode, allow_documents = mode or "local", bool(allow_documents)
+
+    spec = cloud_models.default_model()
+    wants_cloud = mode == "cloud" or bool(request.escalate)
+    route = {"answer_with": "local", "chat_mode": mode if spec else "local",
+             "allow_documents": allow_documents}
+    if not wants_cloud:
+        return route, None
+    if spec is None:
+        return route, "_No cloud model is configured (its API key is not set), so this was answered locally._\n\n"
+    spent, budget = await cloud_usage.month_total(user_id), cloud_usage.budget_usd()
+    if spent >= budget:
+        return route, (f"_This month's cloud budget is used up (${spent:.2f} of ${budget:.2f}), "
+                       "so this was answered locally._\n\n")
+    route.update(answer_with="cloud", cloud_model=spec.name, cloud_label=spec.label)
+    return route, None
+
+
+def is_streamed_delta(msg, metadata: dict) -> bool:
+    """Whether a streamed message is a delta from a cloud model (Claude)."""
+    return isinstance(msg, AIMessageChunk) and (
+        (metadata or {}).get("ls_provider") == "anthropic"
+        or (msg.response_metadata or {}).get("model_provider") == "anthropic"
+    )
+
+
+async def record_cloud_turn(controller, route: dict, thread_id: str, user_id: str,
+                            tokens: dict) -> None:
+    """Log a cloud answer's usage and show its badge (the cloud_answer card)."""
+    spec = next((m for m in cloud_models.load_models() if m.name == route.get("cloud_model")), None)
+    cost = spec.cost(tokens["input"], tokens["output"]) if spec else 0.0
+    try:
+        await cloud_usage.record(thread_id=thread_id, user_id=user_id,
+                                 model=spec.model if spec else "?", input_tokens=tokens["input"],
+                                 output_tokens=tokens["output"], cost_usd=cost)
+    except Exception:
+        logger.exception("could not record cloud usage for %s", thread_id)
+    badge = await controller.add_tool_call("cloud_answer", f"cloud-{uuid4().hex[:12]}")
+    badge.set_result(json.dumps({"model": spec.label if spec else route.get("cloud_label"),
+                                 "input_tokens": tokens["input"],
+                                 "output_tokens": tokens["output"], "cost_usd": round(cost, 4)}))
 
 
 async def note_reservation_conflict(thread_id: str) -> None:
@@ -269,10 +341,18 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 # Falls back to what the client sent, which is what this did
                 # before the association existed.
                 logger.exception("could not resolve documents for %s", thread_id)
+        route, route_note = await decide_route(request, thread_id, user_id)
+        to_cloud = route["answer_with"] == "cloud"
+
         async def run_turn(controller: RunController):
             tool_calls = {}
-            tool_calls_by_idx = {}
+            # (message id, chunk index) -> call id, for providers that stream a
+            # tool call in pieces: only the first piece carries the id and name.
+            call_ids_by_index: dict = {}
             emitted_text = ""
+            cloud_tokens = {"input": 0, "output": 0}
+            if route_note:
+                controller.append_text(route_note)
 
             def content_to_text(content: Any) -> str:
                 if isinstance(content, str):
@@ -318,6 +398,7 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                             "user_id": user_id,
                             "system": request.system,
                             "frontend_tools": request.tools,
+                            **route,
                         }
                     },
                     stream_mode="messages",
@@ -329,7 +410,19 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                         continue
 
                     if isinstance(msg, AIMessageChunk) or isinstance(msg, AIMessage):
-                        append_deduped_text(content_to_text(msg.content))
+                        streamed = is_streamed_delta(msg, metadata)
+                        if streamed:
+                            # A cloud model streams deltas: each piece is new
+                            # text, never the whole reply so far.
+                            delta = content_to_text(msg.content)
+                            if delta:
+                                controller.append_text(delta)
+                                emitted_text += delta
+                            usage = getattr(msg, "usage_metadata", None) or {}
+                            cloud_tokens["input"] += usage.get("input_tokens", 0) or 0
+                            cloud_tokens["output"] += usage.get("output_tokens", 0) or 0
+                        else:
+                            append_deduped_text(content_to_text(msg.content))
 
                         for chunk in getattr(msg, "tool_call_chunks", []) or []:
                             idx = chunk.get("index")
@@ -337,26 +430,23 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                             name = chunk.get("name")
                             args = chunk.get("args") or ""
 
-                            if not call_id or not name:
-                                continue
-
-                            # Providers that stream tool calls incrementally (OpenAI)
-                            # key the accumulation by index; Ollama delivers each call
-                            # complete in one chunk with index None, so fall back to
-                            # the call id.
-                            key = call_id if idx is None else idx
-
-                            if key not in tool_calls_by_idx:
-                                tool_controller = await controller.add_tool_call(
-                                    name, call_id
-                                )
-                                tool_calls_by_idx[key] = tool_controller
-                                tool_calls[call_id] = tool_controller
+                            # Ollama delivers each call whole, with its id. A
+                            # streaming provider (Claude) sends the id and name
+                            # in the first piece only; later pieces carry just
+                            # the index and more argument text.
+                            if call_id and name:
+                                call_ids_by_index[(msg.id, idx)] = call_id
+                                if call_id not in tool_calls:
+                                    tool_calls[call_id] = await controller.add_tool_call(
+                                        name, call_id
+                                    )
                             else:
-                                tool_controller = tool_calls_by_idx[key]
+                                call_id = call_ids_by_index.get((msg.id, idx))
+                                if call_id is None:
+                                    continue
 
                             if args:
-                                tool_controller.append_args_text(str(args))
+                                tool_calls[call_id].append_args_text(str(args))
             except Exception as exc:
                 # Without this the run dies mid-stream and the user gets an
                 # assistant message with no content at all - a blank bubble with
@@ -373,6 +463,9 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 controller.append_text(
                     f"\n\n_Something went wrong while answering: {reason}_"
                 )
+
+            if to_cloud and (cloud_tokens["input"] or cloud_tokens["output"]):
+                await record_cloud_turn(controller, route, thread_id, user_id, cloud_tokens)
 
             # Outside the except, so a turn that failed still counts: it
             # happened, it is in the transcript, and the chat should sort as

@@ -1,5 +1,9 @@
 """Delegate hard questions to external AI models.
 
+ask_claude was replaced by hybrid mode (app/cloud): a turn is handed over to
+Claude whole, with the user's approval, instead of the local model relaying one
+question.
+
 Each tool self-disables (via required_env) when its API key is absent. The
 answer is truncated so it fits comfortably in the local model's context.
 """
@@ -38,31 +42,6 @@ async def ask_openai(prompt: str) -> str:
     return _truncate(content)
 
 
-@tool
-async def ask_claude(prompt: str) -> str:
-    """Ask Anthropic's Claude a question and return its answer. Use for complex reasoning or analysis that needs a more capable external model."""
-    import anthropic
-
-    client = anthropic.AsyncAnthropic()
-    try:
-        # fallbacks="default": if Claude's safety classifiers decline, the API
-        # retries the same request server-side on the recommended fallback model.
-        response = await client.beta.messages.create(
-            model=os.getenv("CLAUDE_DELEGATE_MODEL", "claude-opus-5"),
-            max_tokens=MAX_TOKENS,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except anthropic.APIError as exc:
-        return f"Error: Claude request failed: {exc}."
-    if response.stop_reason == "refusal":
-        return "Error: Claude declined to answer this request."
-    return _truncate(
-        "".join(block.text for block in response.content if block.type == "text")
-    )
-
-
 register(
     ToolSpec(
         tool=ask_openai,
@@ -71,16 +50,5 @@ register(
             "ask_openai."
         ),
         required_env=("OPENAI_API_KEY",),
-    )
-)
-
-register(
-    ToolSpec(
-        tool=ask_claude,
-        prompt_hint=(
-            "For complex reasoning or analysis beyond your ability, you may "
-            "delegate with ask_claude."
-        ),
-        required_env=("ANTHROPIC_API_KEY",),
     )
 )

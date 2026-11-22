@@ -1,0 +1,13 @@
+# Cloud models the chat can hand a turn over to (hybrid mode).
+#
+# An entry is offered only when its API key variable is set in backend/.env.
+# Prices are per million tokens, for the usage log and the monthly budget
+# (CLOUD_BUDGET_USD); keep them in step with the provider's price list.
+- name: claude-sonnet
+  label: Claude Sonnet 5.5
+  provider: anthropic
+  model: claude-sonnet-5-5
+  api_key_env: ANTHROPIC_API_KEY
+  effort: medium
+  max_tokens: 8000
+  price_per_mtok: {input: 2.00, output: 10.00}
