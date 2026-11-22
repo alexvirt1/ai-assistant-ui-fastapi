@@ -112,11 +112,6 @@ const AskOpenAiIndicator = makeIndicator(
   () => "Consulting OpenAI (GPT)…",
 );
 
-const AskClaudeIndicator = makeIndicator(
-  "ask_claude",
-  "🧠",
-  () => "Consulting Anthropic Claude…",
-);
 
 /**
  * Fallback for tools without a dedicated indicator (MCP servers, declarative
@@ -150,7 +145,6 @@ export function ToolExecutionIndicators() {
       <WebSearchIndicator />
       <FetchPageIndicator />
       <AskOpenAiIndicator />
-      <AskClaudeIndicator />
     </>
   );
 }
