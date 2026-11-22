@@ -1,6 +1,17 @@
 # Hybrid mode (local first, cloud when needed): proposal
 
-Status: **proposal, awaiting decisions** (see the last section). Target release: 1.9.0.
+Status: **phase 1 built on this branch, not deployed** (2026-11-22). Target release: 1.9.0.
+
+Decided by the owner: Claude first, both ways (an "Open in Claude" button that uses the claude.ai
+subscription, and automatic hand-over with an API key); Claude Sonnet 5.5; hand-over, with a test
+kit comparing it with consult; auto mode asks before every escalation; documents go to Claude only
+when allowed per chat; `langchain-anthropic` added.
+
+Built: cloud model config and usage log with a monthly budget, per-chat mode (local / auto /
+Claude), hand-over in the agent loop with a text-only history and documents only when allowed, the
+`escalate` tool and approval card, the cost badge, "Open in Claude", and the comparison kit
+(`backend/evals/hybrid_modes`). Not built yet: the rule-based triggers (output cap, calculator and
+date tools, "think harder" retry) and other providers.
 Branch: `hybrid-mode`, merged into `dev`, then `dev` into `main`.
 
 ## Goal
