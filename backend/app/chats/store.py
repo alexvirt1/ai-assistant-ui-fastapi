@@ -57,6 +57,12 @@ CREATE INDEX IF NOT EXISTS chat_threads_owner_recent_idx
 -- second copy of the owner is a second thing that can be wrong. Both foreign
 -- keys cascade - deleting a chat must not leave rows pointing at it, and a
 -- document removed from the corpus is no longer attached to anything.
+-- Hybrid mode (app/cloud): which model answers this chat, and whether its
+-- documents may be sent to a cloud model. Added after the table existed, so
+-- added idempotently here rather than in CREATE TABLE.
+ALTER TABLE chat_threads ADD COLUMN IF NOT EXISTS cloud_mode TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE chat_threads ADD COLUMN IF NOT EXISTS cloud_documents BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS chat_thread_documents (
     thread_id   TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -106,6 +112,8 @@ class ChatThread:
     archived: bool
     created_at: datetime
     updated_at: datetime
+    cloud_mode: str = "local"
+    cloud_documents: bool = False
 
 
 def database_url() -> str | None:
@@ -277,7 +285,7 @@ async def list_threads(
         return []
 
     sql = [
-        "SELECT id, user_id, title, preview, turn_count, archived, created_at,"
+        "SELECT id, user_id, title, preview, turn_count, archived, cloud_mode, cloud_documents, created_at,"
         " updated_at FROM chat_threads WHERE user_id = %(user_id)s"
     ]
     params: dict = {"user_id": user_id, "limit": limit, "offset": offset}
@@ -318,7 +326,7 @@ async def get_thread(thread_id: str, user_id: str) -> ChatThread | None:
         row = await (
             await conn.execute(
                 "SELECT id, user_id, title, preview, turn_count, archived,"
-                " created_at, updated_at FROM chat_threads"
+                " cloud_mode, cloud_documents, created_at, updated_at FROM chat_threads"
                 " WHERE id = %s AND user_id = %s",
                 (thread_id, user_id),
             )
@@ -333,8 +341,10 @@ async def update_thread(
     *,
     title: str | None = None,
     archived: bool | None = None,
+    cloud_mode: str | None = None,
+    cloud_documents: bool | None = None,
 ) -> ChatThread | None:
-    """Rename and/or (un)archive. Returns the updated row, or None if not theirs."""
+    """Rename, (un)archive, or set hybrid-mode settings. None if not theirs."""
     url = database_url()
     if not url:
         return None
@@ -347,6 +357,12 @@ async def update_thread(
     if archived is not None:
         sets.append("archived = %(archived)s")
         params["archived"] = archived
+    if cloud_mode is not None:
+        sets.append("cloud_mode = %(cloud_mode)s")
+        params["cloud_mode"] = cloud_mode
+    if cloud_documents is not None:
+        sets.append("cloud_documents = %(cloud_documents)s")
+        params["cloud_documents"] = cloud_documents
 
     async with await AsyncConnection.connect(url) as conn:
         conn.row_factory = dict_row
@@ -355,7 +371,7 @@ async def update_thread(
                 f"UPDATE chat_threads SET {', '.join(sets)}"
                 " WHERE id = %(id)s AND user_id = %(user_id)s"
                 " RETURNING id, user_id, title, preview, turn_count, archived,"
-                " created_at, updated_at",
+                " cloud_mode, cloud_documents, created_at, updated_at",
                 params,
             )
         ).fetchone()

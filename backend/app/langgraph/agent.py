@@ -8,13 +8,17 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
+from langgraph.config import get_config
 from langgraph.prebuilt import create_react_agent
 from langgraph.prebuilt.chat_agent_executor import AgentState
 
+from ..cloud import models as cloud_models
+from ..cloud.history import cloud_view
 from ..documents.chunker import count_message_tokens
 from ..models import DEFAULT_ROLE, make_chat_model
 from ..models.selection import current_tag
 from ..tools import compose_prompt, get_enabled_specs
+from ..tools.builtin.escalate import ESCALATE_HINT
 
 load_dotenv()
 
@@ -29,21 +33,81 @@ def make_model(role: str = DEFAULT_ROLE):
     return make_chat_model(role)
 
 
+# --- hybrid mode -------------------------------------------------------------
+#
+# Each turn's route comes from the chat route through the run's config:
+#   answer_with      "local" or "cloud" - which model answers this turn
+#   chat_mode        the chat's mode: "local", "auto" or "cloud"
+#   cloud_model      name of the cloud model (app/cloud/models.py)
+#   cloud_label      its display name
+#   allow_documents  whether the chat's documents may go to the cloud model
+
+# Bound only to the local model in auto mode.
+AUTO_ONLY_TOOLS = {"escalate"}
+# Bound to a cloud model only when the chat allows its documents to be sent.
+DOCUMENT_TOOLS = {"search_document"}
+
+CLOUD_PREAMBLE = (
+    "You are {label}. The user's private assistant normally runs a small local model; this "
+    "turn has been handed over to you because it needs a stronger model. Answer the user's "
+    "latest message directly and completely, in the user's language. Earlier turns are shown "
+    "as text only. The user's attached documents are not shared with you unless they allowed "
+    "it for this chat.\n\n"
+)
+
+# History sent to a cloud model, in tokens: it is paid for on every turn.
+CLOUD_HISTORY_MAX_TOKENS = int(os.getenv("CLOUD_HISTORY_MAX_TOKENS", "8000"))
+
+
+def turn_route() -> dict:
+    """This run's hybrid-mode settings (empty outside a graph run)."""
+    try:
+        config = get_config()
+    except RuntimeError:
+        return {}
+    return dict((config or {}).get("configurable") or {})
+
+
+def tools_for(route: dict, tools: list) -> list:
+    """The tools the model answering this turn may call."""
+    to_cloud = route.get("answer_with") == "cloud"
+    chosen = []
+    for t in tools:
+        if t.name in AUTO_ONLY_TOOLS and (to_cloud or route.get("chat_mode") != "auto"):
+            continue
+        if to_cloud and t.name in DOCUMENT_TOOLS and not route.get("allow_documents"):
+            continue
+        chosen.append(t)
+    return chosen
+
+
 def make_model_selector(tools: list):
     """The agent's model, re-resolved on every step from the selection.
 
     A callable rather than a model so a switch takes effect on the next model
     call without rebuilding the graph - including mid-turn, right after the
-    switch_model tool returns. Bound models are cached per tag, since binding
-    the tool schemas on every step would be repeated work.
+    switch_model tool returns. Bound models are cached per model and tool set,
+    since binding the tool schemas on every step would be repeated work.
+
+    A turn routed to the cloud (hybrid mode) gets the configured cloud model
+    with the same tools, minus the ones it may not use (see tools_for).
     """
     bound = {}
 
     def select_model(state, runtime):
+        route = turn_route()
+        chosen = tools_for(route, tools)
+        names = tuple(sorted(t.name for t in chosen))
+        if route.get("answer_with") == "cloud" and route.get("cloud_model"):
+            key = ("cloud", route["cloud_model"], names)
+            if key not in bound:
+                bound[key] = cloud_models.make_chat_model(route["cloud_model"]).bind_tools(chosen)
+            return bound[key]
         tag = current_tag()
-        if tag not in bound:
-            bound[tag] = make_chat_model(DEFAULT_ROLE, model=tag).bind_tools(tools)
-        return bound[tag]
+        key = (tag, names)
+        if key not in bound:
+            bound[key] = make_chat_model(DEFAULT_ROLE, model=tag).bind_tools(chosen)
+        return bound[key]
 
     return select_model
 
@@ -211,8 +275,17 @@ def make_prompt(system_prompt: str):
         # Appended per call, so an attached document stays reachable however
         # long the thread grows.
         attached = state.get("documents") if hasattr(state, "get") else None
+        route = turn_route()
+
+        if route.get("answer_with") == "cloud":
+            return cloud_prompt(system_prompt, messages, attached, route)
+
+        base = system_prompt
+        if route.get("chat_mode") == "auto":
+            base = f"{system_prompt}\n- {ESCALATE_HINT}"
         active_system = (
-            SystemMessage(f"{system_prompt}\n\n{attached}") if attached else system
+            SystemMessage(f"{base}\n\n{attached}") if attached
+            else (system if base is system_prompt else SystemMessage(base))
         )
         # Before trimming, not after: retiring these frees the single largest
         # block in the context, so the budget goes to actual conversation.
@@ -241,6 +314,28 @@ def make_prompt(system_prompt: str):
         return [active_system] + list(trimmed)
 
     return prompt
+
+
+def cloud_prompt(system_prompt: str, messages: list, attached: str | None, route: dict) -> list:
+    """What a cloud model is sent for a handed-over turn.
+
+    Earlier turns as text only (app/cloud/history.py), trimmed to
+    CLOUD_HISTORY_MAX_TOKENS; the document block only when the chat allows it.
+    """
+    text = CLOUD_PREAMBLE.format(label=route.get("cloud_label") or "a cloud model") + system_prompt
+    if attached and route.get("allow_documents"):
+        text += f"\n\n{attached}"
+    view = cloud_view(messages)
+    trimmed = trim_messages(
+        view,
+        max_tokens=CLOUD_HISTORY_MAX_TOKENS,
+        token_counter=count_message_tokens,
+        strategy="last",
+        start_on="human",
+        include_system=False,
+        allow_partial=False,
+    )
+    return [SystemMessage(text)] + list(trimmed or _minimal_tail(view))
 
 
 def build_graph(checkpointer=None):

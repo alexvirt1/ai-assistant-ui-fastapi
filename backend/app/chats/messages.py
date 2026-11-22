@@ -7,6 +7,7 @@ into a transcript the frontend can hand to the runtime as initialMessages.
 Kept free of FastAPI and psycopg so it can be tested without either.
 """
 
+import json
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -14,7 +15,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 # Tools whose finished call renders something in the chat (see
 # frontend/components/tools/GeneratedImage.tsx), unlike the rest, whose
 # indicator disappears once they complete.
-VISIBLE_TOOLS = frozenset({"generate_image"})
+VISIBLE_TOOLS = frozenset({"generate_image", "escalate"})
+
+# The card under an answer written by a cloud model (hybrid mode). Not a real
+# tool call: rebuilt on replay from the AIMessages' metadata, as it is sent
+# live by the chat route.
+CLOUD_BADGE = "cloud_answer"
 
 
 def content_to_text(content: Any) -> str:
@@ -81,7 +87,13 @@ def to_core_messages(messages: list) -> list[dict]:
     # AIMessages the ReAct loop produced.
     turn: list[dict] = []
 
+    # Token usage of cloud-written messages in the turn being assembled.
+    cloud = {"input": 0, "output": 0, "model": None}
+
     def end_assistant_turn() -> None:
+        if cloud["model"]:
+            turn.append(_cloud_badge(cloud))
+        cloud.update(input=0, output=0, model=None)
         # Text is what makes a turn worth showing: the tool parts render
         # nothing once complete, so a turn without text is a blank bubble.
         # The exception is a tool whose card *is* the content - a generated
@@ -102,6 +114,12 @@ def to_core_messages(messages: list) -> list[dict]:
                 out.append({"role": "user", "content": [{"type": "text", "text": text}]})
 
         elif isinstance(message, AIMessage):
+            meta = message.response_metadata or {}
+            if meta.get("model_provider") == "anthropic":
+                usage = message.usage_metadata or {}
+                cloud["input"] += usage.get("input_tokens", 0) or 0
+                cloud["output"] += usage.get("output_tokens", 0) or 0
+                cloud["model"] = meta.get("model_name") or meta.get("model") or "claude"
             text = content_to_text(message.content)
             if text:
                 turn.append({"type": "text", "text": text})
@@ -125,3 +143,19 @@ def to_core_messages(messages: list) -> list[dict]:
 
     end_assistant_turn()
     return out
+
+
+def _cloud_badge(cloud: dict) -> dict:
+    from ..cloud import models as cloud_models  # avoids an import cycle at startup
+
+    spec = cloud_models.by_model_id(cloud["model"])
+    cost = spec.cost(cloud["input"], cloud["output"]) if spec else 0.0
+    return {
+        "type": "tool-call",
+        "toolCallId": f"cloud-replay-{cloud['input']}-{cloud['output']}",
+        "toolName": CLOUD_BADGE,
+        "args": {},
+        "result": json.dumps({"model": spec.label if spec else cloud["model"],
+                              "input_tokens": cloud["input"], "output_tokens": cloud["output"],
+                              "cost_usd": round(cost, 4)}),
+    }

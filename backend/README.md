@@ -90,6 +90,33 @@ Copy `.env.example` to `.env`. The model and server variables:
 Tool-related variables (`ENABLED_TOOLS`, provider API keys, YAML config paths)
 are documented in the [root README](../README.md).
 
+### Hybrid mode
+
+A turn can be answered by a cloud model instead of the local one. Configured in
+`cloud_models.yaml` (Claude Sonnet 5.5, via `langchain-anthropic`); a model is offered only when
+its key variable (`ANTHROPIC_API_KEY`) is set. The code is in `app/cloud/`.
+
+| Chat mode | Who answers |
+| --- | --- |
+| `local` (default) | The local model, as before. |
+| `auto` | The local model, which may call `escalate`; the chat shows an approval card, and "Ask" sends the next turn to the cloud model. |
+| `cloud` | The cloud model, every turn. |
+
+A cloud turn runs the same agent loop and tools. Earlier turns are sent as text only, without
+their tool results, trimmed to `CLOUD_HISTORY_MAX_TOKENS` (8000). Attached documents and
+`search_document` are given to the cloud model only when the chat allows it. Usage and cost go to
+the `cloud_usage` table; over `CLOUD_BUDGET_USD` (10) a month, or without a key, turns stay local
+with a note. The mode and document permission are stored per chat (`PATCH /api/chats/{id}` with
+`mode`, `allowCloudDocuments`).
+
+| Endpoint | |
+| --- | --- |
+| `GET /api/cloud` | Whether a cloud model is configured, its price, the budget and this month's spend. |
+| `GET /api/chats/{id}` | One chat's summary, including its mode. |
+
+`evals/hybrid_modes` compares local, consult, hand-over and auto on the self-judgment questions;
+`--dry-run` prints the cost estimate.
+
 ### Images
 
 Text-to-image runs on ComfyUI (`COMFYUI_BASE_URL`), through the

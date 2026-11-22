@@ -21,6 +21,9 @@ import {
   ToolRunningFallback,
 } from "./tools/ToolExecutionIndicators";
 import { GeneratedImageUI } from "./tools/GeneratedImage";
+import { CloudBadgeUI, EscalationUI } from "./cloud/CloudCards";
+import { HybridControls, OpenInClaudeButton } from "./cloud/HybridControls";
+import { requestFields } from "@/lib/hybrid";
 
 export function MyAssistant({
   threadId,
@@ -62,7 +65,14 @@ export function MyAssistant({
     // Merged into every request body. The backend pins documents into the
     // system prompt, which is never trimmed - unlike the conversation - and
     // uses threadId to attribute the turn, in preference to the cookie.
-    body: { documents, threadId },
+    //
+    // The hybrid-mode fields (lib/hybrid.ts) are copied in as getters, so they
+    // are read when a request is built: the runtime applies new options only
+    // after a render, and the one-turn escalate flag must not go out late.
+    body: Object.defineProperties(
+      { documents, threadId },
+      Object.getOwnPropertyDescriptors(requestFields),
+    ),
     // The transcript of a conversation opened from the sidebar. Restored
     // rather than replayed through the model: it comes from the checkpoint
     // that produced it.
@@ -77,6 +87,8 @@ export function MyAssistant({
     <AssistantRuntimeProvider runtime={runtime}>
       <ToolExecutionIndicators />
       <GeneratedImageUI />
+      <EscalationUI />
+      <CloudBadgeUI />
       {onRunningChange ? (
         <ThreadActivity onRunningChange={onRunningChange} />
       ) : null}
@@ -88,6 +100,8 @@ export function MyAssistant({
               chips and DocumentChips renders nothing. "New chat" lives in the
               sidebar now, next to the list it adds to. */}
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            <HybridControls threadId={threadId} />
+            <OpenInClaudeButton />
             {threadId ? <ExportPdfButton threadId={threadId} /> : null}
             <ModelPicker />
             <ThemeToggle />

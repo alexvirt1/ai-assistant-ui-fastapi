@@ -8,6 +8,7 @@ lifespan has built it (see app/server.py).
 import base64
 import binascii
 import logging
+from typing import Literal
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -32,6 +33,9 @@ class ChatSummary(BaseModel):
     archived: bool
     createdAt: str
     updatedAt: str
+    # Hybrid mode: "local", "auto" or "cloud", and whether documents may be sent.
+    mode: str = "local"
+    allowCloudDocuments: bool = False
 
     @classmethod
     def of(cls, thread: chat_store.ChatThread) -> "ChatSummary":
@@ -43,12 +47,16 @@ class ChatSummary(BaseModel):
             archived=thread.archived,
             createdAt=thread.created_at.isoformat(),
             updatedAt=thread.updated_at.isoformat(),
+            mode=thread.cloud_mode,
+            allowCloudDocuments=thread.cloud_documents,
         )
 
 
 class ChatUpdate(BaseModel):
     title: str | None = None
     archived: bool | None = None
+    mode: Literal["local", "auto", "cloud"] | None = None
+    allowCloudDocuments: bool | None = None
 
 
 # A chat's diagrams drawn at print resolution are 20-300 KB each; these caps
@@ -177,6 +185,17 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
             raise HTTPException(status_code=404, detail="No such chat")
         return await chat_store.list_thread_documents(thread_id, user_id)
 
+    @router.get("/{thread_id}")
+    async def get_chat(
+        thread_id: str,
+        user_id: str = Depends(current_user_id),
+    ) -> ChatSummary:
+        """One chat's summary, including its hybrid-mode settings."""
+        thread = await chat_store.get_thread(thread_id, user_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="No such chat")
+        return ChatSummary.of(thread)
+
     @router.patch("/{thread_id}")
     async def update_chat(
         thread_id: str,
@@ -184,7 +203,8 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         user_id: str = Depends(current_user_id),
     ) -> ChatSummary:
         thread = await chat_store.update_thread(
-            thread_id, user_id, title=update.title, archived=update.archived
+            thread_id, user_id, title=update.title, archived=update.archived,
+            cloud_mode=update.mode, cloud_documents=update.allowCloudDocuments,
         )
         if thread is None:
             raise HTTPException(status_code=404, detail="No such chat")
