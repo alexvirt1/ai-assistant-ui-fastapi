@@ -38,6 +38,7 @@ fpdf2 = "^2.8.4"
 markdown-it-py = "^4.0"
 ziamath = "^0.13"
 mdit-py-plugins = "^0.5"
+langchain-anthropic = "^1"
 
 
 [tool.poetry.group.dev.dependencies]
