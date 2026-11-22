@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-21
+
 **Hybrid mode: Claude when the local model is not enough.** Each chat now has a mode in the
 header: *Local only* (as before), *Auto*, or *Claude Sonnet 5.5*. In Auto the local model may
 propose handing a question over; the chat shows "The local model suggests asking Claude Sonnet
