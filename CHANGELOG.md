@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**Hybrid mode: Claude when the local model is not enough.** Each chat now has a mode in the
+header: *Local only* (as before), *Auto*, or *Claude Sonnet 5.5*. In Auto the local model may
+propose handing a question over; the chat shows "The local model suggests asking Claude Sonnet
+5.5: …" with *Ask* and *Keep local*, and nothing is sent without the click. In Claude mode every
+turn goes to Claude. A handed-over turn uses the same tools (web search, images, time); earlier
+turns are sent as text only, without old tool results, and attached documents only when the
+chat's *Docs* box is ticked. Every Claude answer shows its model, tokens and cost. A monthly
+budget (`CLOUD_BUDGET_USD`, default $10) keeps turns local once spent; set a spend limit in the
+Anthropic Console too. An *Open in Claude* button copies the conversation and opens claude.ai, to
+continue on a Claude subscription without the API.
+
+Why these defaults: an eval of the local models on AI-1 (`docs/evals/self-judgment.md`) showed
+none can reliably tell when it is out of its depth, so the user decides, not the model's
+confidence. `evals/hybrid_modes` compares local, consult, hand-over and auto on the same questions.
+
+**Fixed: streamed answers from providers that send text in pieces.** The chat route treated every
+piece as the whole reply so far, which would drop a piece identical to the text before it, and
+dropped tool-call arguments sent in pieces. Ollama sends whole messages, so this only shows with a
+cloud model.
+
+`ask_claude` is replaced by hybrid mode.
+
+**Upgrading.** New backend dependency: `langchain-anthropic` (it also moves `langchain-core` to
+1.8 and `langsmith` to 0.16); run `poetry install`. Set `ANTHROPIC_API_KEY` in `backend/.env` to
+turn hybrid mode on (an API key from console.anthropic.com, billed per token, separately from a
+claude.ai subscription). New tables and columns are created at startup. Restart the backend before
+deploying the frontend.
+
 ## [1.8.1] - 2026-11-21
 
 **GPU reservations from the GPU host.** Agreed with the AI-1 agent, which runs
