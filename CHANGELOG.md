@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-11-23
+
 **The chat fits phone screens.** On a phone the chat list used to take half the width, so answers
 wrapped one word per line, and the header's controls made the page scroll sideways.
 
