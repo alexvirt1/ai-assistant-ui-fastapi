@@ -50,8 +50,12 @@ or output). `LoadImage` takes uploaded images.
     writing a file. This needs the `websockets` package declared, which is installed today only
     as a dependency of a dependency, so it needs the owner's approval.
   - Inputs: there is no node for inline images, so reference photos must be uploaded as files.
-    The AI-1 agent is asking the owner for an hourly purge of temp files older than about
-    60 minutes. Never `input/`, which is permanent by design.
+    Never `input/`, which is permanent by design. **The owner approved a purge:** a cron job on
+    AI-1 deletes temp files older than 60 min, every 15 min, so a temp file lives at most about
+    75 min.
+  - **Constraint on the app:** upload a job's references right before queueing it, with names
+    unique to that job, never ahead of time and never reused across jobs. A job and its uploads
+    must finish within 60 min of the upload.
 - **The websocket switch** (AI-1 agent, later the same day), for when it is built:
   - Per job, open `ws://…:8188/ws?clientId=ai-assistant-ui-<job>` *before* queueing, and queue
     with the same `client_id`. `SaveImageWebsocket` sends the PNG only to the client that queued
