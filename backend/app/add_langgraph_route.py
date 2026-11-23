@@ -121,7 +121,10 @@ def convert_to_langchain_messages(
             content = []
             for p in msg.content:
                 if isinstance(p, LanguageModelTextPart):
-                    content.append({"type": "text", "text": p.text})
+                    # NUL can't be stored: Postgres rejects it in text and
+                    # JSONB, so registering the chat failed and the chat was
+                    # never listed (a photo sent as a "text file" in 1.9.4).
+                    content.append({"type": "text", "text": p.text.replace("\x00", "")})
                 elif isinstance(p, LanguageModelImagePart):
                     content.append({"type": "image_url", "image_url": p.image})
             result.append(HumanMessage(content=content))
