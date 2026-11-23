@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-23
+
 **A failed Claude turn is answered locally, with a plain explanation.** When Claude fails on its
 side, the chat now says why and the local model answers the same turn instead of showing only
 "Something went wrong: Error code: 401 ...":
