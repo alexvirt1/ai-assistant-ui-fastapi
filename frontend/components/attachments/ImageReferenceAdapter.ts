@@ -7,6 +7,7 @@ import type {
 } from "@assistant-ui/react";
 
 import { attachmentId } from "@/lib/attachments";
+import { finishUpload, startUpload } from "@/lib/documentStore";
 import {
   REFERENCE_ACCEPT,
   formatReferenceMarker,
@@ -49,7 +50,15 @@ export class ImageReferenceAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadId = this.threadId();
     if (!threadId) throw new Error("The chat isn't ready yet; try again in a moment.");
-    const ref = await uploadReference(attachment.file, threadId);
+    // The header's "uploading…" chip: a phone photo can take seconds to
+    // upload, and with nothing on screen it looked as if Send did nothing.
+    startUpload(attachment.id, attachment.name);
+    let ref;
+    try {
+      ref = await uploadReference(attachment.file, threadId);
+    } finally {
+      finishUpload(attachment.id);
+    }
     return {
       ...attachment,
       status: { type: "complete" },

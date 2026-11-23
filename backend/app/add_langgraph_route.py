@@ -325,6 +325,13 @@ async def note_reservation_conflict(thread_id: str) -> None:
                        "will be loaded there. Report this to the AI-1 agent.", held.describe())
 
 
+# Chats with a turn running now (one backend process).
+ACTIVE_TURNS: set[str] = set()
+
+BUSY_NOTE = ("_A reply is still being written in this chat, so this message was not sent "
+             "to the model. Wait for it to finish, then send again._")
+
+
 async def keep_alive(controller: RunController) -> None:
     """Send a data chunk every HEARTBEAT_SECONDS until cancelled.
 
@@ -565,6 +572,21 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 logger.exception("could not touch thread %s", thread_id)
 
         async def run(controller: RunController):
+            # One turn per chat at a time. Two at once (a second Send while
+            # photos uploaded, or two tabs) wrote to the same checkpoint and
+            # raced for the GPU: one generated an image while the other loaded
+            # the chat model and ran out of memory. Checked and claimed with
+            # no await in between, so two requests can't both pass.
+            if thread_id in ACTIVE_TURNS:
+                controller.append_text(BUSY_NOTE)
+                return
+            ACTIVE_TURNS.add(thread_id)
+            try:
+                await run_with_heartbeat(controller)
+            finally:
+                ACTIVE_TURNS.discard(thread_id)
+
+        async def run_with_heartbeat(controller: RunController):
             asyncio.create_task(note_reservation_conflict(thread_id))
             heartbeat = asyncio.create_task(keep_alive(controller))
             try:

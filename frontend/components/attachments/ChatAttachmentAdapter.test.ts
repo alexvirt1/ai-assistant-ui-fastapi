@@ -47,4 +47,33 @@ describe("ChatAttachmentAdapter", () => {
     await expect(a.send(pending)).rejects.toThrow(/Not an image/);
     expect(getAttachmentNotice()).toMatch(/Couldn't upload "fake.png"/);
   });
+  it("uploads each photo once, even if Send is pressed twice", async () => {
+    let finish: (value: Response) => void = () => {};
+    const fetchMock = vi.fn(
+      () => new Promise<Response>((resolve) => (finish = resolve)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const a = adapter();
+    const pending = await a.add({ file: new File(["x"], "dog.png", { type: "image/png" }) });
+    const first = a.send(pending);
+    await expect(a.send(pending)).rejects.toThrow(/already being sent/);
+    expect(getAttachmentNotice()).toBeNull();
+    finish({ ok: true, json: async () => ({ id: "r1", name: "dog.png", width: 1, height: 1 }) } as Response);
+    await expect(first).resolves.toMatchObject({ status: { type: "complete" } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the upload in progress", async () => {
+    const { getPendingUploads } = await import("@/lib/documentStore");
+    let finish: (value: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (finish = resolve))));
+    const a = adapter();
+    const pending = await a.add({ file: new File(["x"], "dog.png", { type: "image/png" }) });
+    const sending = a.send(pending);
+    await Promise.resolve();
+    expect(getPendingUploads().map((u) => u.name)).toEqual(["dog.png"]);
+    finish({ ok: true, json: async () => ({ id: "r1", name: "dog.png", width: 1, height: 1 }) } as Response);
+    await sending;
+    expect(getPendingUploads()).toEqual([]);
+  });
 });
