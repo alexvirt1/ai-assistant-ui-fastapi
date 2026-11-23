@@ -34,7 +34,8 @@ async def generate_image(
     `seed`: leave at -1 for a random image; reuse a previous seed to vary one.
     `reference_ids`: ids of reference photos attached to this chat (up to 4) when
     the image should look like them - a person, an animal, an object, a colour
-    scheme. The prompt then describes the scene and what should change.
+    scheme. They are image 1, image 2, ... in this order; the prompt must name
+    each subject by its image number with a short visual description.
     """
     configurable = (config or {}).get("configurable", {})
     thread_id = configurable.get("thread_id")
@@ -84,7 +85,16 @@ _HINT = (
     "When reference photos are attached to the chat and the user wants an image "
     "that looks like them (this dog, my face, that vase), pass their ids as "
     "reference_ids - preferably 1 or 2, at most 4 (with 3-4 each is used at lower "
-    "resolution and details are less faithful). "
+    "resolution and details are less faithful); one photo per subject is enough. "
+    "The photos are image 1, image 2, ... in the order of reference_ids. In the "
+    "prompt, name EVERY referenced subject by its image number with a short visual "
+    "description taken from what the user said or the photo's file name, e.g. "
+    "\"the pirate with a red bandana and beaded dreadlocks from image 1 and the sea "
+    "captain whose beard is octopus tentacles from image 2 sit together at a tavern "
+    "table\". Never turn a referenced subject into a generic one (\"a friend\", "
+    "\"another pirate\"): the image follows the text, and a subject the prompt does "
+    "not describe comes out generic. If you can't tell who or what a photo shows, "
+    "ask the user before generating. "
     "If the tool returns an error, tell the user what it says. When asked which "
     "image models exist, call list_image_models."
 )

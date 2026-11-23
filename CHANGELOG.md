@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-23
+
+**Every person in the reference photos comes out.** With photos of two people, the image showed
+one of them and a generic stranger. FLUX.2 Klein follows the text, and the chat model can't see
+the photos, so its prompt said "two pirates" or "his friend". Now:
+
+- **Captions:** the first time a photo is used, `qwen3-vl:8b` on the GPU host describes it in
+  one sentence ("a creature with … tentacle-like appendages for facial hair…"). The image prompt
+  gets "Image 1 shows: …" for each photo, and the caption is kept with the photo. This adds about
+  10 s to the first image from new photos (6 s to load the vision model, 3 s per photo), while
+  the chat model is unloaded anyway.
+- **Prompts:** the chat model names each subject by its image number with a visual description,
+  uses one photo per subject, and asks when it can't tell who a photo shows.
+
+**Upgrading.** New optional setting `REFERENCE_CAPTION_MODEL` (default `qwen3-vl:8b`; empty turns
+captions off); the model must be on the Ollama host. The backend adds
+`chat_references.caption` on start. Restart the backend; no frontend changes.
+
 ## [1.10.1] - 2026-11-23
 
 **Fixed: photos sent twice.** The composer uploads the photos before sending, and Send stayed

@@ -166,11 +166,16 @@ def render_reference_block(references: list) -> str:
     """
     if not references:
         return ""
-    lines = [f'- id={r.id} name="{r.name}" {r.width}x{r.height}' for r in references]
+    lines = [f'- id={r.id} name="{r.name}" {r.width}x{r.height}'
+             + (f' shows: {r.caption}' if getattr(r, "caption", None) else "")
+             for r in references]
     return (
         "Reference photos attached to this conversation:\n" + "\n".join(lines)
         + "\n\nWhen the user wants an image that looks like one of them, call "
-        "generate_image with its id in reference_ids. A message that attaches a photo "
+        "generate_image with its id in reference_ids; the first id you pass is image 1, "
+        "the second image 2, and the prompt names each subject by that number with a "
+        "short description (use what a photo shows, when listed; a photo without it is "
+        "described to the image model automatically). A message that attaches a photo "
         "contains <reference-image id=\"...\" name=\"...\" />; unless the user says "
         "otherwise, use the photos of their latest message that has any. You cannot "
         "see these photos; never describe what is in them unless the user told you."

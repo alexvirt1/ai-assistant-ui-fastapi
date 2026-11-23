@@ -27,9 +27,11 @@ CREATE TABLE IF NOT EXISTS chat_references (
     deleted_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS chat_references_thread ON chat_references (thread_id);
+-- What the photo shows, written by a vision model the first time it is used (1.11.0).
+ALTER TABLE chat_references ADD COLUMN IF NOT EXISTS caption TEXT;
 """
 
-COLUMNS = "id, thread_id, name, width, height, png, created_at, deleted_at"
+COLUMNS = "id, thread_id, name, width, height, png, created_at, deleted_at, caption"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class StoredReference:
     png: bytes | None
     created_at: datetime
     deleted_at: datetime | None
+    caption: str | None = None
 
     @property
     def deleted(self) -> bool:
@@ -50,7 +53,7 @@ class StoredReference:
     def describe(self) -> dict:
         return {"id": str(self.id), "name": self.name, "width": self.width,
                 "height": self.height, "createdAt": self.created_at.isoformat(),
-                "deleted": self.deleted}
+                "deleted": self.deleted, "caption": self.caption}
 
 
 def database_url() -> str | None:
@@ -108,6 +111,19 @@ async def delete(ref_id: uuid.UUID, user_id: str) -> bool:
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+
+async def set_caption(ref_id: uuid.UUID, caption: str) -> None:
+    """Keep what the photo shows, so it is captioned only once."""
+    url = database_url()
+    if not url:
+        return
+    async with await AsyncConnection.connect(url) as conn:
+        await conn.execute(
+            "UPDATE chat_references SET caption = %s WHERE id = %s AND deleted_at IS NULL",
+            (caption, ref_id),
+        )
+        await conn.commit()
 
 
 async def list_for_thread(thread_id: str, user_id: str, *,
