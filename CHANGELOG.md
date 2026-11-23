@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-23
+
+**A failed Claude turn is answered locally, with a plain explanation.** When Claude fails on its
+side, the chat now says why and the local model answers the same turn instead of showing only
+"Something went wrong: Error code: 401 ...":
+
+- **Rejected key:** "Claude rejected the API key. Check ANTHROPIC_API_KEY in backend/.env".
+- **Rate limit, overload, outage, unreachable:** a short reason of its own for each.
+
+A malformed request still shows its error, since that would be a bug worth seeing. Nothing is
+billed for a turn Claude rejected.
+
 ## [1.9.1] - 2026-11-23
 
 **The backend listens on 127.0.0.1 only.** It used to listen on every address (0.0.0.0:8000),
