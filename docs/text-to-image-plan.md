@@ -65,7 +65,10 @@ sequenceDiagram
      The model's text is never used as workflow JSON. It polls `/history/{prompt_id}` until done,
      with a timeout, and fetches the PNG via `/view`. The template ends in a
      preview node, which writes to ComfyUI's temp folder, not `SaveImage`, so no lasting copy stays
-     on AI-1. That is part of "delete permanently".
+     on AI-1. That is part of "delete permanently". *Corrected in 1.9.4:* the temp folder is
+     emptied only when ComfyUI restarts, and is readable from the LAN until then, so this did not
+     hold. Since 1.9.4 the workflows end in `SaveImageWebsocket`, which sends the PNG over the
+     websocket and writes no file.
    - **Ollama:** `POST /api/generate` with an image model, PNG returned in the response. Listed only
      when Ollama reports an `image`-capable model. Code and tests ship, but it stays unused until
      such a model exists.

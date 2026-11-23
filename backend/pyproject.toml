@@ -39,6 +39,7 @@ markdown-it-py = "^4.0"
 ziamath = "^0.13"
 mdit-py-plugins = "^0.5"
 langchain-anthropic = "^1"
+websockets = "^15"
 
 
 [tool.poetry.group.dev.dependencies]
