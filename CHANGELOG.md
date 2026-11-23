@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-11-23
+
+**Fixed: photos sent twice.** The composer uploads the photos before sending, and Send stayed
+active meanwhile, so a second tap sent them again as a message without text. That started a
+second reply alongside the first; one generated the image while the other loaded the chat model,
+and the GPU ran out of memory.
+
+- **Uploading:** a second tap while photos upload does nothing, and each photo shows an
+  "uploading…" chip in the header.
+- **One reply per chat at a time:** a message sent while a reply is still being written gets a
+  note asking to wait, instead of a second reply. This also covers the same chat in two tabs.
+
+**Fixed: a chat could be lost.** In 1.9.4 a photo picked on a phone was attached as a text file;
+its NUL bytes made the database refuse the new chat, which was then never listed. NUL characters
+are now dropped from messages, and a binary file attached as text is refused with a message.
+
 ## [1.10.0] - 2026-11-23
 
 **Reference photos for image generation.** Attach photos with the paperclip (PNG, JPEG, GIF or
