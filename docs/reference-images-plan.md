@@ -52,6 +52,14 @@ or output). `LoadImage` takes uploaded images.
   - Inputs: there is no node for inline images, so reference photos must be uploaded as files.
     The AI-1 agent is asking the owner for an hourly purge of temp files older than about
     60 minutes. Never `input/`, which is permanent by design.
+- **The websocket switch** (AI-1 agent, later the same day), for when it is built:
+  - Per job, open `ws://…:8188/ws?clientId=ai-assistant-ui-<job>` *before* queueing, and queue
+    with the same `client_id`. `SaveImageWebsocket` sends the PNG only to the client that queued
+    the prompt, and a fast job could otherwise finish unseen.
+  - The busy check must treat every `ai-assistant-ui-*` id as ours.
+  - After the job, `POST /history {"delete": [prompt_id]}`, so the prompt text and the
+    reference file names don't stay in ComfyUI's memory.
+  - Nothing on AI-1 keys on the exact client id, and its reservation check ignores client ids.
 - **Load:** each reference at about 1 MP adds about as many image tokens as the target itself.
   4 refs at 1 MP is about 5x the sequence length, and much more attention work. Hence the cap of
   about 2 MP in total. Plain Klein at 1 MP / 8 steps takes about 15 s warm on AI-1. The AI-1 agent
