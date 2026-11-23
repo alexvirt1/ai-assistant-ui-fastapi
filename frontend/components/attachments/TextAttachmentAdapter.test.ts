@@ -429,4 +429,12 @@ describe("TextAttachmentAdapter upload progress", () => {
 
     expect(getPendingUploads()).toEqual([]);
   });
+  it("refuses a binary file that only looks like text", async () => {
+    const adapter = new TextAttachmentAdapter();
+    const photo = new File([new Uint8Array([82, 73, 70, 70, 0, 0, 87, 69])], "photo.txt", {
+      type: "text/plain",
+    });
+    const pending = await adapter.add({ file: photo });
+    await expect(adapter.send(pending)).rejects.toThrow(/isn't a text file/);
+  });
 });

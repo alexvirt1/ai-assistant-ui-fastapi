@@ -75,6 +75,14 @@ export class TextAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const text = await attachment.file.text();
+    // A NUL character means a binary file (a photo, an archive) that only
+    // looked like text by its name or a phone's picker. Sent inline it is
+    // garbage to the model, and Postgres can't store it at all.
+    if (text.includes("\u0000")) {
+      throw new Error(
+        `"${attachment.name}" isn't a text file. Attach photos as PNG, JPEG, GIF or WebP.`,
+      );
+    }
     const complete = (body: string): CompleteAttachment => ({
       ...attachment,
       status: { type: "complete" },

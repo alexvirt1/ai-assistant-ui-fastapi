@@ -96,3 +96,41 @@ class TestSuccessIsUnaffected:
     def test_a_healthy_run_reports_no_error(self):
         body = post(client_for(FakeGraph(chunks=["an answer"])))
         assert "went wrong" not in body
+
+
+class TestOneTurnPerChat:
+    """A second turn in a chat whose reply is still running is refused."""
+
+    def post_to(self, client, thread_id):
+        return client.post("/api/chat", json={
+            "threadId": thread_id,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }).text
+
+    def test_a_turn_while_one_runs_is_refused_without_running_the_model(self, monkeypatch):
+        from app import add_langgraph_route as route
+
+        class Untouchable(FakeGraph):
+            async def astream(self, *args, **kwargs):
+                raise AssertionError("the model must not run")
+                yield  # pragma: no cover
+
+        monkeypatch.setattr(route, "ACTIVE_TURNS", {"busy-chat"})
+        text = self.post_to(client_for(Untouchable()), "busy-chat")
+        assert "still being written" in text
+
+    def test_the_chat_is_free_again_after_a_turn(self, monkeypatch):
+        from app import add_langgraph_route as route
+
+        monkeypatch.setattr(route, "ACTIVE_TURNS", set())
+        client = client_for(FakeGraph(chunks=["Hello"]))
+        assert "Hello" in self.post_to(client, "c1")
+        assert route.ACTIVE_TURNS == set()
+        assert "Hello" in self.post_to(client, "c1")
+
+    def test_a_failed_turn_frees_the_chat(self, monkeypatch):
+        from app import add_langgraph_route as route
+
+        monkeypatch.setattr(route, "ACTIVE_TURNS", set())
+        self.post_to(client_for(FakeGraph(error=RuntimeError("boom"))), "c2")
+        assert route.ACTIVE_TURNS == set()
