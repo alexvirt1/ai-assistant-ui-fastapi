@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-23
+
+**The backend listens on 127.0.0.1 only.** It used to listen on every address (0.0.0.0:8000),
+although only the local Next.js server calls it - the browser never does. With no login of its
+own, that let any host on the LAN use the API directly, going around the frontend and, now that
+the chat is published, around the login proxy in front of it. `BACKEND_HOST` restores another
+address for a setup where the frontend runs elsewhere.
+
+**Upgrading.** Nothing to do on a single host. If something on another host calls the backend
+directly, set `BACKEND_HOST=0.0.0.0` in `backend/.env`.
+
 ## [1.9.0] - 2026-11-21
 
 **Hybrid mode: Claude when the local model is not enough.** Each chat now has a mode in the

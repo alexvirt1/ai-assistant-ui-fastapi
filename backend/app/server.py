@@ -103,7 +103,19 @@ app.include_router(models_router)
 app.include_router(images_router)
 app.include_router(cloud_router)
 
+def bind_host() -> str:
+    """The address the backend listens on.
+
+    Loopback by default: the browser never calls the backend directly - the
+    Next.js server proxies to it at 127.0.0.1:8000 - and the backend has no
+    login of its own, so listening on the LAN only let other hosts go around
+    the frontend (and, once published, around the login proxy in front of it).
+    Set BACKEND_HOST=0.0.0.0 for a setup where the frontend runs elsewhere.
+    """
+    return os.getenv("BACKEND_HOST", "127.0.0.1")
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=bind_host(), port=8000)
