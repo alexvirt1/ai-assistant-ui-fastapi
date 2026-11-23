@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-23
+
 **Reference photos for image generation.** Attach photos with the paperclip (PNG, JPEG, GIF or
 WebP, up to 20 MB) and ask for an image that looks like them: "this dog as an astronaut".
 
