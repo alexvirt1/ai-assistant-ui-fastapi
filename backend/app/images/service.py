@@ -17,6 +17,7 @@ model is only needed again after the last one.
 """
 
 import asyncio
+import dataclasses
 import logging
 import os
 import random
@@ -27,6 +28,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ..models import ollama
 from ..models.selection import current_tag
+from ..references import caption as captions
 from ..references import store as reference_store
 from . import comfyui, store
 from .comfyui import ImageGenerationError, ImageRequest
@@ -115,6 +117,10 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
         async with _lock:
             await _unload_chat_models()
             try:
+                if refs:
+                    texts = await _captions(refs)
+                    request = dataclasses.replace(
+                        request, prompt=captions.prompt_with_captions(prompt, texts))
                 png = await comfyui.generate(spec, request, references=[r.png for r in refs])
             finally:
                 if _pending == 1:
@@ -140,6 +146,32 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
                     "shapes and details follow them less closely than with 1 or 2."}
            if len(refs) > 2 else {}),
     }
+
+
+async def _captions(refs: list) -> list[str | None]:
+    """What each reference shows, captioning the ones not seen before.
+
+    Called with the chat model already unloaded. ComfyUI may still hold its
+    model from an earlier image, so it is asked to free the GPU first; the
+    vision model unloads itself after answering (keep_alive 0), and Klein
+    loads next. A photo that can't be captioned is used without one.
+    """
+    texts = [r.caption for r in refs]
+    missing = [i for i, text in enumerate(texts) if not text]
+    if not missing or not captions.caption_model():
+        return texts
+    await comfyui.free_memory()
+    await comfyui.wait_until_released()
+    for i in missing:
+        text = await captions.caption(refs[i].png)
+        if text:
+            texts[i] = text
+            try:
+                await reference_store.set_caption(refs[i].id, text)
+            except Exception:
+                logger.exception("could not store the caption of reference %s", refs[i].id)
+    await ollama.unload(captions.caption_model())
+    return texts
 
 
 async def _unload_chat_models() -> None:

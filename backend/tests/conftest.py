@@ -33,6 +33,9 @@ def clean_env(monkeypatch):
         "SINGLE_USER_ID",
     ):
         monkeypatch.delenv(var, raising=False)
+    # Captioning reference photos calls a vision model on the Ollama VM; off
+    # unless a test turns it on (tests/test_captions.py, with a mock client).
+    monkeypatch.setenv("REFERENCE_CAPTION_MODEL", "")
     yield
 
 

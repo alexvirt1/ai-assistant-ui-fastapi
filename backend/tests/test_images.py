@@ -856,7 +856,7 @@ async def test_service_uses_klein_with_references(fake_service, refs_in_store, m
     seen = {}
 
     async def generate(model, req, references=()):
-        seen.update(model=model.name, references=list(references))
+        seen.update(model=model.name, references=list(references), prompt=req.prompt)
         return png_bytes()
 
     monkeypatch.setattr(service.comfyui, "generate", generate)
@@ -866,6 +866,7 @@ async def test_service_uses_klein_with_references(fake_service, refs_in_store, m
                                              user_id="u", model="z-image-turbo",
                                              reference_ids=[str(ref.id)])
     assert seen["model"] == "flux2-klein" and seen["references"] == [ref.png]
+    assert seen["prompt"] == "this dog as an astronaut"   # captioning is off in tests
     assert result["references"] == [{"id": str(ref.id), "name": "dog.jpg"}]
     assert "note" not in result
     assert fake_service["saved"]["reference_ids"] == [str(ref.id)]
@@ -902,3 +903,27 @@ async def test_service_rejects_unknown_and_too_many(fake_service, refs_in_store)
     with pytest.raises(ImageGenerationError, match="At most 4"):
         await service.generate_for_chat(prompt="x", thread_id="t", user_id="u",
                                         reference_ids=[str(uuid.uuid4()) for _ in range(5)])
+
+
+async def test_service_adds_captions_to_the_image_prompt_only(fake_service, refs_in_store,
+                                                               monkeypatch):
+    seen = {}
+
+    async def generate(model, req, references=()):
+        seen["prompt"] = req.prompt
+        return png_bytes()
+
+    async def captions_for(refs):
+        return ["A brown dog with one white ear."]
+
+    monkeypatch.setattr(service.comfyui, "generate", generate)
+    monkeypatch.setattr(service, "_captions", captions_for)
+    ref = stored_ref()
+    refs_in_store[ref.id] = ref
+    result = await service.generate_for_chat(prompt="this dog as an astronaut", thread_id="t",
+                                             user_id="u", reference_ids=[str(ref.id)])
+    assert seen["prompt"] == ("this dog as an astronaut\n\n"
+                              "Image 1 shows: A brown dog with one white ear.")
+    # The chat keeps the prompt the model wrote; the captions are for Klein.
+    assert result["prompt"] == "this dog as an astronaut"
+    assert fake_service["saved"]["prompt"] == "this dog as an astronaut"
