@@ -1,6 +1,6 @@
 # Reference images for image generation: implementation plan
 
-Status: **phases 1 and 2 built on this branch, not deployed** (2026-11-23). Target release: 1.10.0.
+Status: **phases 1–3 built on this branch, not deployed** (2026-11-23). Target release: 1.10.0.
 
 **Live test on AI-1** (synthetic shapes, 1024², 8 steps, outside reservations):
 
@@ -14,6 +14,27 @@ So 1 or 2 references is the default the tool hint recommends; 3 or 4 are allowed
 result is flagged as lower fidelity, as the AI-1 agent advised. The AI-1 agent has the API
 graphs for a fuller benchmark (warm times, peak VRAM, 4 × 1 MP), which it runs only with the
 owner's OK because it evicts the chat model.
+
+**Benchmark** (owner's OK, 2026-11-23; warm, 2 runs each; peak VRAM sampled every 0.5 s as
+`vram_total - (vram_free - torch_vram_free)`):
+
+| Config | Warm time | Peak VRAM |
+|---|---|---|
+| no references | ~15 s | 8.1 GiB |
+| 1 × 1 MP | 19 s | 9.5 GiB |
+| 2 × 1 MP | ~30 s | 9.1 GiB |
+| 4 × 0.5 MP | ~30 s | 9.1 GiB |
+| 4 × 1 MP | ~57 s | 7.6 GiB (peak probably missed) |
+
+4 × 1 MP takes twice as long as 4 × 0.5 MP with no visible gain, so the 2 MP total cap stays.
+`qwen3:8b` was back fully on the GPU after every run.
+
+**Phase 3 (frontend):** the paperclip takes PNG, JPEG, GIF and WebP next to text files. A photo
+is uploaded when the message is sent, and the model gets a marker
+`<reference-image id="…" name="…" />` in place of the picture. After a reload the marker shows
+as a thumbnail in the user's message; click to enlarge or delete it. The image card lists the
+references it used, and the PDF prints them as thumbnails (a deleted one by name). Checked in a
+browser against a fake backend, desktop and phone.
 Branch: `reference-images`, merged into `dev`, then `dev` into `main`.
 
 ## Goal
