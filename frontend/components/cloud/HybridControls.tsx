@@ -51,7 +51,11 @@ export function OpenInClaudeButton() {
       title="Copy this conversation and open a new chat on claude.ai (uses your Claude subscription)"
       className={`${control} font-medium hover:bg-gray-100 dark:hover:bg-gray-800`}
     >
-      {copied === "copied" ? "Copied – paste in Claude" : copied === "failed" ? "Copy failed" : "Open in Claude"}
+      {copied === "copied" ? "Copied – paste in Claude" : copied === "failed" ? "Copy failed" : (
+        <>
+          <span className="hidden sm:inline">Open in </span>Claude
+        </>
+      )}
     </button>
   );
 }
@@ -112,7 +116,7 @@ export function HybridControls({ threadId }: { threadId?: string }) {
         disabled={isRunning}
         onChange={(event) => change({ mode: event.target.value as HybridMode })}
         title={spent ? `Cloud spend: ${spent}` : undefined}
-        className={control}
+        className={`${control} max-w-[7.5rem] sm:max-w-none`}
       >
         <option value="local">Local only</option>
         <option value="auto">Auto (ask before {label})</option>

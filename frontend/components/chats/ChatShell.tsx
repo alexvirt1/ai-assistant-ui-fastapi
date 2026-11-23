@@ -38,6 +38,9 @@ export function ChatShell({
   // Bumped to remount the pane with a recovered transcript (same thread).
   const [paneVersion, setPaneVersion] = useState(0);
   const [recovering, setRecovering] = useState(false);
+  // The chat list on narrow screens: a drawer over the chat, closed by
+  // default. From md up it sits beside the chat and this is ignored.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const recovery = useRef<AbortController | null>(null);
 
   const stopRecovery = useCallback(() => {
@@ -164,16 +167,49 @@ export function ChatShell({
     setRefreshKey((key) => key + 1);
   }, [stopRecovery]);
 
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setSidebarOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
+
   return (
-    <div className="flex h-full">
-      <ChatSidebar
-        activeId={threadId}
-        refreshKey={refreshKey}
-        disabled={isRunning}
-        onSelect={openChat}
-        onNew={startNewChat}
-        onDeleted={handleDeleted}
-      />
+    <div className="relative flex h-full">
+      {sidebarOpen ? (
+        <div
+          aria-hidden
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      ) : null}
+      {/* A drawer on phones, a column from md up. translate-x moves it off
+          screen rather than unmounting it, so the list keeps its scroll
+          position and search between openings. */}
+      <div
+        data-testid="sidebar-drawer"
+        data-open={sidebarOpen}
+        className={`fixed inset-y-0 left-0 z-40 w-[85vw] max-w-xs bg-aui-background shadow-xl transition-transform duration-200 md:static md:z-auto md:w-auto md:max-w-none md:translate-x-0 md:shadow-none ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <ChatSidebar
+          activeId={threadId}
+          refreshKey={refreshKey}
+          disabled={isRunning}
+          onSelect={(id) => {
+            setSidebarOpen(false);
+            void openChat(id);
+          }}
+          onNew={() => {
+            setSidebarOpen(false);
+            startNewChat();
+          }}
+          onDeleted={handleDeleted}
+        />
+      </div>
       {/* flex-col + min-h-0 so the banner takes its own height and the thread
           below it scrolls, rather than the column growing past the viewport. */}
       <div className="flex min-w-0 flex-1 flex-col">
@@ -205,6 +241,7 @@ export function ChatShell({
             attachmentLimits={attachmentLimits}
             onRunningChange={handleRunningChange}
             onTurnUnfinished={handleTurnUnfinished}
+            onOpenSidebar={() => setSidebarOpen(true)}
           />
           </div>
         ) : null}

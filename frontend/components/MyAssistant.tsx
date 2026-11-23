@@ -31,6 +31,7 @@ export function MyAssistant({
   attachmentLimits,
   onRunningChange,
   onTurnUnfinished,
+  onOpenSidebar,
 }: {
   /** Which stored conversation this pane is. Sent with every request so the
    *  backend attributes the turn to the right thread rather than falling back
@@ -43,6 +44,8 @@ export function MyAssistant({
   onRunningChange?: (isRunning: boolean) => void;
   /** Called when a turn stops running without finishing - see lib/recovery. */
   onTurnUnfinished?: () => void;
+  /** Shows the chat list on narrow screens, where it is a drawer. */
+  onOpenSidebar?: () => void;
 }) {
   // Memoised rather than rebuilt per render: the runtime holds a reference to
   // the adapter, and churning it every render would be pointless work.
@@ -94,12 +97,30 @@ export function MyAssistant({
       ) : null}
       {onTurnUnfinished ? <StreamRecovery onUnfinished={onTurnUnfinished} /> : null}
       <div className="flex h-full flex-col">
-        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
-          <DocumentChips />
-          {/* ml-auto so the controls stay right-aligned when there are no
-              chips and DocumentChips renders nothing. "New chat" lives in the
-              sidebar now, next to the list it adds to. */}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* Wraps on a phone: the controls do not fit one 390px row, and a
+            row that does not wrap makes the whole page scroll sideways. */}
+        <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-200 px-3 py-2 sm:px-4 dark:border-gray-800">
+          {onOpenSidebar ? (
+            <button
+              type="button"
+              onClick={onOpenSidebar}
+              aria-label="Show chats"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 text-gray-700 hover:bg-gray-100 md:hidden dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+            >
+              <svg aria-hidden viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                <path d="M3 5h14M3 10h14M3 15h14" />
+              </svg>
+            </button>
+          ) : null}
+          {/* On a phone the chips take a row of their own under the controls;
+              empty:hidden drops the wrapper when there are none. */}
+          <div className="order-last w-full empty:hidden sm:order-none sm:w-auto">
+            <DocumentChips />
+          </div>
+          {/* flex-1 so the controls share the menu button's row and wrap
+              inside it. "New chat" lives in the sidebar, next to the list it
+              adds to. */}
+          <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
             <HybridControls threadId={threadId} />
             <OpenInClaudeButton />
             {threadId ? <ExportPdfButton threadId={threadId} /> : null}

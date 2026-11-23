@@ -17,12 +17,17 @@ vi.mock("../MyAssistant", () => ({
     threadId,
     initialMessages,
     onTurnUnfinished,
+    onOpenSidebar,
   }: {
     threadId?: string;
     initialMessages?: RestoredMessage[];
     onTurnUnfinished?: () => void;
+    onOpenSidebar?: () => void;
   }) => (
     <div data-testid="pane" data-thread={threadId}>
+      <button type="button" onClick={() => onOpenSidebar?.()}>
+        open chats
+      </button>
       <button type="button" onClick={() => onTurnUnfinished?.()}>
         simulate dropped stream
       </button>
@@ -351,5 +356,30 @@ describe("ChatShell stream recovery", () => {
     await waitFor(() => expect(screen.getByText("[generate_image]Here they are.")).toBeInTheDocument());
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     spy.mockRestore();
+  });
+});
+
+describe("ChatShell on a phone", () => {
+  const drawer = () => screen.getByTestId("sidebar-drawer");
+
+  it("opens the chat list as a drawer and closes it on Escape or a pick", async () => {
+    setThreadCookie("t1");
+    mockBackend({ transcripts: { t1: [said("user", "first")], t2: [said("user", "second")] } });
+    render(<ChatShell />);
+    await waitFor(() => expect(pane()).toHaveAttribute("data-thread", "t1"));
+    expect(drawer()).toHaveAttribute("data-open", "false");
+
+    await act(async () => screen.getByText("open chats").click());
+    expect(drawer()).toHaveAttribute("data-open", "true");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(drawer()).toHaveAttribute("data-open", "false");
+
+    await act(async () => screen.getByText("open chats").click());
+    const second = (await screen.findByText("Second chat")).closest("button")!;
+    await act(async () => second.click());
+    await waitFor(() => expect(pane()).toHaveAttribute("data-thread", "t2"));
+    expect(drawer()).toHaveAttribute("data-open", "false");
   });
 });

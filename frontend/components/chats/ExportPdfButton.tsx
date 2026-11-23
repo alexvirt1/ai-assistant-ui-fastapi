@@ -97,7 +97,11 @@ export function ExportPdfButton({ threadId }: { threadId: string }) {
           : "border-gray-200 text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
       }`}
     >
-      {busy ? "Exporting…" : error ? "Export failed" : "Export PDF"}
+      {busy ? "Exporting…" : error ? "Export failed" : (
+        <>
+          <span className="hidden sm:inline">Export&nbsp;</span>PDF
+        </>
+      )}
     </button>
   );
 }
