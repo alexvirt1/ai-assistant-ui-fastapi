@@ -16,6 +16,7 @@ import {
   type GeneratedImageInfo,
 } from "@/lib/images";
 
+import { ReferenceThumbs } from "../references/ReferenceThumbs";
 import { RunningIndicator, WaitingForAnswer } from "./ToolExecutionIndicators";
 
 /** Seconds since the card mounted, while generation runs. */
@@ -167,6 +168,12 @@ export function ImageCard({ image }: { image: GeneratedImageInfo }) {
         <p className="line-clamp-3 text-gray-700 dark:text-gray-300" title={image.prompt}>
           {image.prompt}
         </p>
+        {image.references.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 py-1">
+            <span>References:</span>
+            <ReferenceThumbs refs={image.references} size="sm" label="Reference photos used" />
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
             {image.model} · {image.width}×{image.height} · seed {image.seed}

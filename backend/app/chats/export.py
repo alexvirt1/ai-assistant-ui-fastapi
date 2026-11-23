@@ -385,6 +385,8 @@ def _rich(pdf: _ChatPDF, text: str, diagrams: dict[str, Diagram] | None = None) 
 # The delimiters the frontend wraps attachments in (frontend/lib/attachments.ts).
 # A closing tag may be missing if the text was cut, so end-of-string closes too.
 _ATTACHMENT = re.compile(r"<attachment name=([^>\n]*)>\n?(.*?)(?:\n?</attachment>|\Z)", re.S)
+# A reference photo attached to a user message (frontend lib/references.ts).
+_REFERENCE = re.compile(r'\s*<reference-image id="([^"]+)" name="([^"]*)" />\s*')
 _DOCUMENT_REF = re.compile(
     r'<attached-document\b[^>]*?\bname="([^"]*)"[^>]*>.*?(?:</attached-document>|\Z)', re.S
 )
@@ -408,6 +410,57 @@ def _summarize_attachments(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def split_references(text: str) -> tuple[str, list[str]]:
+    """A user message's text without its reference markers, and their ids in order."""
+    ids = _REFERENCE.findall(text)
+    return _REFERENCE.sub("\n", text).strip(), [ref_id for ref_id, _name in ids]
+
+
+# Reference photos are printed as a row of small thumbnails.
+REFERENCE_THUMB_MM = 18
+
+
+def _reference_row(
+    pdf: _ChatPDF,
+    ids: list[str],
+    references: dict[str, tuple[bytes | None, str]],
+    label: str = "",
+) -> None:
+    """Thumbnails of reference photos in a row, wrapping; a deleted one is named instead."""
+    shown = [references[i] for i in ids if i in references]
+    if not shown:
+        return
+    pdf.set_font(SANS, "I", 8.5)
+    pdf.set_text_color(MUTED)
+    if label:
+        pdf.multi_cell(0, 4.5, label, align="L", new_x="LMARGIN", new_y="NEXT")
+    side, gap = REFERENCE_THUMB_MM, 2
+    x, y = pdf.l_margin, pdf.get_y() + 1
+    gone: list[str] = []
+    for png, name in shown:
+        if png is None:
+            gone.append(name)
+            continue
+        with Image.open(BytesIO(png)) as image:
+            px_width, px_height = image.size
+        width, height = (side, side * px_height / px_width) if px_width >= px_height \
+            else (side * px_width / px_height, side)
+        if x + width > pdf.l_margin + pdf.epw:
+            x, y = pdf.l_margin, y + side + gap
+        if y + side > pdf.page_break_trigger:
+            pdf.add_page()
+            x, y = pdf.l_margin, pdf.get_y()
+        pdf.image(BytesIO(png), x=x, y=y + (side - height) / 2, w=width, h=height)
+        x += width + gap
+    if len(gone) < len(shown):
+        pdf.set_xy(pdf.l_margin, y + side + gap)
+    for name in gone:
+        pdf.multi_cell(0, 4.5, f"[Photo deleted: {name}]", align="L",
+                       new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0)
+    pdf.set_font(SANS, size=BODY_SIZE)
+
+
 def _tool_line(pdf: _ChatPDF, names: list[str]) -> None:
     pdf.set_font(SANS, "I", 8.5)
     pdf.set_text_color(MUTED)
@@ -423,16 +476,30 @@ def _tool_line(pdf: _ChatPDF, names: list[str]) -> None:
 IMAGE_MAX_WIDTH_MM = 120
 
 
-def generated_image_id(part: dict) -> str | None:
-    """The image id in a finished generate_image call, if it succeeded."""
+def _image_result(part: dict) -> dict | None:
     if part.get("toolName") != "generate_image" or part.get("isError"):
         return None
     try:
         result = json.loads(part.get("result") or "")
     except (TypeError, ValueError):
         return None
-    image_id = result.get("image_id") if isinstance(result, dict) else None
+    return result if isinstance(result, dict) else None
+
+
+def generated_image_id(part: dict) -> str | None:
+    """The image id in a finished generate_image call, if it succeeded."""
+    result = _image_result(part)
+    image_id = result.get("image_id") if result else None
     return str(image_id) if image_id else None
+
+
+def generated_image_references(part: dict) -> list[str]:
+    """The ids of the reference photos a finished generate_image call used."""
+    result = _image_result(part) or {}
+    refs = result.get("references")
+    if not isinstance(refs, list):
+        return []
+    return [str(r["id"]) for r in refs if isinstance(r, dict) and r.get("id")]
 
 
 def _generated_image(pdf: _ChatPDF, png: bytes | None, prompt: str) -> None:
@@ -470,17 +537,21 @@ def render_chat_pdf(
     exported_at: datetime | None = None,
     diagrams: dict[str, Diagram] | None = None,
     images: dict[str, tuple[bytes | None, str]] | None = None,
+    references: dict[str, tuple[bytes | None, str]] | None = None,
 ) -> bytes:
     """The conversation as PDF bytes.
 
     `messages` is to_core_messages output. `diagrams` are images for ```mermaid
     blocks, keyed by diagram_key(source); a block without one shows its source.
     `images` are generated images by id, as (png or None once deleted, prompt);
-    a generate_image call is printed as its image. Other tool calls are named but their
+    a generate_image call is printed as its image. `references` are reference
+    photos by id, as (png or None once deleted, name): shown as thumbnails in the
+    message that attached them and under an image made from them. Other tool calls are named but their
     arguments and results are left out: a document search returns ~11 000
     tokens of passages, which would bury the conversation it was part of.
     """
     exported_at = exported_at or datetime.now().astimezone()
+    references = references or {}
     pdf = _ChatPDF(title)
     pdf.add_page()
 
@@ -512,7 +583,10 @@ def render_chat_pdf(
             # As typed, not as markdown: the chat shows a prompt verbatim, so
             # "*" or "#" in a question must not turn into formatting here.
             text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
-            _plain(pdf, _summarize_attachments(text))
+            text, ref_ids = split_references(text)
+            if text:
+                _plain(pdf, _summarize_attachments(text))
+            _reference_row(pdf, ref_ids, references)
             continue
 
         _role_label(pdf, "Assistant", "#2563eb")
@@ -525,6 +599,8 @@ def render_chat_pdf(
                         _tool_line(pdf, tools)
                         tools = []
                     _generated_image(pdf, *images[image_id])
+                    _reference_row(pdf, generated_image_references(part), references,
+                                   label="Made from these reference photos:")
                     continue
                 tools.append(part.get("toolName", "tool"))
                 continue

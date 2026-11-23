@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-23
+
+**Reference photos for image generation.** Attach photos with the paperclip (PNG, JPEG, GIF or
+WebP, up to 20 MB) and ask for an image that looks like them: "this dog as an astronaut".
+
+- **Generation:** FLUX.2 Klein with a `ReferenceLatent` chain per photo; up to 4 photos and 2 MP
+  in total. 1–2 photos work best: in a benchmark on AI-1, 4 photos at 1 MP each took twice as long
+  as at 0.5 MP (~57 s against ~30 s) with no better likeness.
+- **Privacy:** on upload the photo is turned upright and stripped of EXIF metadata, including
+  the GPS position. It is kept on ai-2 with its chat, goes to AI-1 only in the temp folder for the
+  job (deleted there after an hour), and reaches Claude only when the chat's Docs box is ticked.
+- **In the chat:** your message shows the photos as thumbnails (click to enlarge or delete);
+  the image card lists the photos it was made from; the PDF export prints them as thumbnails.
+- **Clear refusals:** a file the paperclip can't take (a PDF, say, which phone pickers offer
+  regardless) now gets a message saying why, instead of nothing. Before, a photo chosen on a phone
+  was sent as a garbled text document.
+
+**Upgrading.** No new dependencies. The backend creates the `chat_references` table and adds
+`chat_images.reference_ids` on start. Rebuild the frontend and restart both services.
+
 ## [1.9.4] - 2026-11-23
 
 **Generated images leave nothing behind on the GPU host.** Images used to come back through

@@ -16,6 +16,8 @@ from .documents.routes import router as documents_router
 from .cloud import usage as cloud_usage
 from .cloud.routes import router as cloud_router
 from .images import store as image_store
+from .references import store as reference_store
+from .references.routes import router as references_router
 from .images.routes import router as images_router
 from .langgraph.agent import build_graph
 from .models.routes import router as models_router
@@ -72,6 +74,7 @@ async def lifespan(app: FastAPI):
     await chat_store.setup()
     # After the chat registry: chat_images references chat_threads.
     await image_store.setup()
+    await reference_store.setup()
     await cloud_usage.setup()
 
     add_langgraph_route(app, graph, "/api/chat")
@@ -101,6 +104,7 @@ app.add_middleware(
 app.include_router(documents_router)
 app.include_router(models_router)
 app.include_router(images_router)
+app.include_router(references_router)
 app.include_router(cloud_router)
 
 def bind_host() -> str:

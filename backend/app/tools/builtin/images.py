@@ -23,6 +23,7 @@ async def generate_image(
     model: str = "",
     size: str = "square",
     seed: int = -1,
+    reference_ids: list[str] | None = None,
 ) -> str:
     """Generate an image from a text description and show it to the user.
 
@@ -31,6 +32,9 @@ async def generate_image(
     `model`: an image model from list_image_models; leave empty for the default.
     `size`: "square" (default), "portrait", "landscape" or "wide".
     `seed`: leave at -1 for a random image; reuse a previous seed to vary one.
+    `reference_ids`: ids of reference photos attached to this chat (up to 4) when
+    the image should look like them - a person, an animal, an object, a colour
+    scheme. The prompt then describes the scene and what should change.
     """
     configurable = (config or {}).get("configurable", {})
     thread_id = configurable.get("thread_id")
@@ -44,6 +48,7 @@ async def generate_image(
             model=model or None,
             size=size or None,
             seed=seed,
+            reference_ids=reference_ids,
         )
     except ImageGenerationError as exc:
         return f"Error: {exc}"
@@ -76,6 +81,10 @@ _HINT = (
     "image services such as pollinations.ai. The chat shows each generated image "
     "itself: after the tool returns, reply in one or two sentences and never write "
     "links, URLs, file names, image ids or markdown images (![...](...)). "
+    "When reference photos are attached to the chat and the user wants an image "
+    "that looks like them (this dog, my face, that vase), pass their ids as "
+    "reference_ids - preferably 1 or 2, at most 4 (with 3-4 each is used at lower "
+    "resolution and details are less faithful). "
     "If the tool returns an error, tell the user what it says. When asked which "
     "image models exist, call list_image_models."
 )
