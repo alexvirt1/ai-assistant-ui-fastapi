@@ -154,6 +154,27 @@ class DocumentAwareState(AgentState, total=False):
     """
 
     documents: str
+    # Reference photos attached to the conversation (render_reference_block).
+    references: str
+
+
+def render_reference_block(references: list) -> str:
+    """The reference photos, by id and name, for the system prompt; empty if none.
+
+    The model never gets the image data here: qwen3:8b cannot see images. It
+    only needs the ids to pass to generate_image.
+    """
+    if not references:
+        return ""
+    lines = [f'- id={r.id} name="{r.name}" {r.width}x{r.height}' for r in references]
+    return (
+        "Reference photos attached to this conversation:\n" + "\n".join(lines)
+        + "\n\nWhen the user wants an image that looks like one of them, call "
+        "generate_image with its id in reference_ids. A message that attaches a photo "
+        "contains <reference-image id=\"...\" name=\"...\" />; unless the user says "
+        "otherwise, use the photos of their latest message that has any. You cannot "
+        "see these photos; never describe what is in them unless the user told you."
+    )
 
 
 def render_document_block(documents: list[dict]) -> str:
@@ -275,16 +296,18 @@ def make_prompt(system_prompt: str):
         # Appended per call, so an attached document stays reachable however
         # long the thread grows.
         attached = state.get("documents") if hasattr(state, "get") else None
+        references = state.get("references") if hasattr(state, "get") else None
         route = turn_route()
 
         if route.get("answer_with") == "cloud":
-            return cloud_prompt(system_prompt, messages, attached, route)
+            return cloud_prompt(system_prompt, messages, attached, route, references)
 
         base = system_prompt
         if route.get("chat_mode") == "auto":
             base = f"{system_prompt}\n- {ESCALATE_HINT}"
+        extras = "\n\n".join(block for block in (attached, references) if block)
         active_system = (
-            SystemMessage(f"{base}\n\n{attached}") if attached
+            SystemMessage(f"{base}\n\n{extras}") if extras
             else (system if base is system_prompt else SystemMessage(base))
         )
         # Before trimming, not after: retiring these frees the single largest
@@ -316,15 +339,26 @@ def make_prompt(system_prompt: str):
     return prompt
 
 
-def cloud_prompt(system_prompt: str, messages: list, attached: str | None, route: dict) -> list:
+def cloud_prompt(system_prompt: str, messages: list, attached: str | None, route: dict,
+                 references: str | None = None) -> list:
     """What a cloud model is sent for a handed-over turn.
 
     Earlier turns as text only (app/cloud/history.py), trimmed to
     CLOUD_HISTORY_MAX_TOKENS; the document block only when the chat allows it.
+    Reference photos: always their ids and names (so it can call
+    generate_image with them); the images themselves only when the chat allows
+    documents, attached to the current question. They come from the run's
+    config, not the state, so they are never written to the checkpoint.
     """
     text = CLOUD_PREAMBLE.format(label=route.get("cloud_label") or "a cloud model") + system_prompt
     if attached and route.get("allow_documents"):
         text += f"\n\n{attached}"
+    if references:
+        text += f"\n\n{references}"
+        if route.get("reference_images"):
+            text += ("\n\nThe reference photos are attached to the user's latest message, "
+                     "in the order listed, so you can see them; describe what matters for "
+                     "the image in the generate_image prompt.")
     view = cloud_view(messages)
     trimmed = trim_messages(
         view,
@@ -335,7 +369,26 @@ def cloud_prompt(system_prompt: str, messages: list, attached: str | None, route
         include_system=False,
         allow_partial=False,
     )
-    return [SystemMessage(text)] + list(trimmed or _minimal_tail(view))
+    out = [SystemMessage(text)] + list(trimmed or _minimal_tail(view))
+    images = route.get("reference_images") or []
+    if images:
+        out = _attach_images(out, images)
+    return out
+
+
+def _attach_images(messages: list, images: list[dict]) -> list:
+    """Add images to the last user message, as Anthropic image blocks."""
+    from ..chats.messages import content_to_text
+
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            blocks = [{"type": "text", "text": content_to_text(messages[i].content)}] + [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                             "data": image["data"]}}
+                for image in images
+            ]
+            return messages[:i] + [HumanMessage(content=blocks)] + messages[i + 1:]
+    return messages
 
 
 def build_graph(checkpointer=None):

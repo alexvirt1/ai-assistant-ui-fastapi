@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS chat_images (
     deleted_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS chat_images_thread ON chat_images (thread_id);
+-- Reference photos the image was generated from (app/references), if any.
+ALTER TABLE chat_images ADD COLUMN IF NOT EXISTS reference_ids TEXT[] NOT NULL DEFAULT '{}';
 """
 
 
@@ -72,7 +74,8 @@ async def setup() -> None:
 
 
 async def save_image(*, thread_id: str, user_id: str, prompt: str, model: str,
-                     seed: int, width: int, height: int, png: bytes) -> uuid.UUID:
+                     seed: int, width: int, height: int, png: bytes,
+                     reference_ids: list[str] | None = None) -> uuid.UUID:
     url = database_url()
     if not url:
         raise RuntimeError("Images need DATABASE_URL: there is nowhere to keep them.")
@@ -80,8 +83,10 @@ async def save_image(*, thread_id: str, user_id: str, prompt: str, model: str,
     async with await AsyncConnection.connect(url) as conn:
         await conn.execute(
             "INSERT INTO chat_images (id, thread_id, user_id, prompt, model, seed,"
-            " width, height, png) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (image_id, thread_id, user_id, prompt, model, seed, width, height, png),
+            " width, height, png, reference_ids)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (image_id, thread_id, user_id, prompt, model, seed, width, height, png,
+             list(reference_ids or [])),
         )
         await conn.commit()
     return image_id

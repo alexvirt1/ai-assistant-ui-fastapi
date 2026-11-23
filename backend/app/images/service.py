@@ -20,12 +20,14 @@ import asyncio
 import logging
 import os
 import random
+import uuid
 from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 
 from ..models import ollama
 from ..models.selection import current_tag
+from ..references import store as reference_store
 from . import comfyui, store
 from .comfyui import ImageGenerationError, ImageRequest
 
@@ -49,14 +51,39 @@ _lock = asyncio.Lock()
 _pending = 0
 
 
+async def load_references(reference_ids: list[str], thread_id: str, user_id: str) -> list:
+    """The chat's reference photos by id, checked. Raises ImageGenerationError."""
+    ids = list(dict.fromkeys(r.strip() for r in reference_ids if r and r.strip()))
+    if len(ids) > comfyui.MAX_REFERENCES:
+        raise ImageGenerationError(
+            f"At most {comfyui.MAX_REFERENCES} reference images can be used for one image.")
+    refs = []
+    for ref_id in ids:
+        try:
+            ref = await reference_store.get(uuid.UUID(ref_id), user_id)
+        except ValueError:
+            ref = None
+        if ref is None or ref.thread_id != thread_id:
+            raise ImageGenerationError(f"There is no reference image {ref_id} in this chat.")
+        if ref.deleted:
+            raise ImageGenerationError(f"The reference image {ref.name} was deleted.")
+        refs.append(ref)
+    return refs
+
+
 async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
                             model: str | None = None, size: str | None = None,
-                            seed: int | None = None) -> dict:
+                            seed: int | None = None,
+                            reference_ids: list[str] | None = None) -> dict:
     """Generate, store and describe one image. Raises ImageGenerationError."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise ImageGenerationError("The image needs a description.")
     prompt = prompt[:MAX_PROMPT_CHARS]
+    refs = await load_references(reference_ids or [], thread_id, user_id)
+    if refs:
+        # Only FLUX.2 Klein takes references; whatever model was asked for.
+        model = next(m.name for m in comfyui.MODELS.values() if m.supports_references)
 
     available = await comfyui.available_models()
     if not available:
@@ -88,7 +115,7 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
         async with _lock:
             await _unload_chat_models()
             try:
-                png = await comfyui.generate(spec, request)
+                png = await comfyui.generate(spec, request, references=[r.png for r in refs])
             finally:
                 if _pending == 1:
                     await _return_gpu_to_chat()
@@ -99,6 +126,7 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
     image_id = await store.save_image(
         thread_id=thread_id, user_id=user_id, prompt=prompt, model=name,
         seed=seed, width=width, height=height, png=png,
+        reference_ids=[str(r.id) for r in refs],
     )
     return {
         "image_id": str(image_id),
@@ -107,6 +135,10 @@ async def generate_for_chat(*, prompt: str, thread_id: str, user_id: str,
         "height": height,
         "seed": seed,
         "prompt": prompt,
+        "references": [{"id": str(r.id), "name": r.name} for r in refs],
+        **({"note": "With 3 or 4 references each one is used at lower resolution, so "
+                    "shapes and details follow them less closely than with 1 or 2."}
+           if len(refs) > 2 else {}),
     }
 
 

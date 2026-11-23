@@ -1,10 +1,13 @@
 import asyncio
+import base64
 import json
 import logging
+from io import BytesIO
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
 
 import anthropic
+from PIL import Image
 from assistant_stream import RunController, create_run
 from assistant_stream.serialization import DataStreamResponse
 from fastapi import Depends, FastAPI, HTTPException
@@ -24,7 +27,8 @@ from .identity import current_user_id
 from .cloud import models as cloud_models
 from .cloud import usage as cloud_usage
 from .images.comfyui import reservation as comfyui_reservation
-from .langgraph.agent import render_document_block
+from .references import store as reference_store
+from .langgraph.agent import render_document_block, render_reference_block
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +251,33 @@ async def record_cloud_turn(controller, route: dict, thread_id: str, user_id: st
                                  "output_tokens": tokens["output"], "cost_usd": round(cost, 4)}))
 
 
+# Reference photos shown to a cloud model per turn, and their size: enough to
+# see a face or an object, small enough to keep the turn's tokens modest.
+MAX_CLOUD_IMAGES = 4
+CLOUD_IMAGE_SIDE = 1024
+
+
+async def load_thread_references(thread_id: str, user_id: str) -> list:
+    """The chat's reference photos, or none if they cannot be read."""
+    if not reference_store.database_url():
+        return []
+    try:
+        return await reference_store.list_for_thread(thread_id, user_id)
+    except Exception:
+        logger.exception("could not load reference photos for %s", thread_id)
+        return []
+
+
+def png_for_cloud(png: bytes) -> str:
+    """A reference photo as base64 PNG, scaled down for a cloud model."""
+    with Image.open(BytesIO(png)) as image:
+        image = image.convert("RGB")
+        image.thumbnail((CLOUD_IMAGE_SIDE, CLOUD_IMAGE_SIDE))
+        out = BytesIO()
+        image.save(out, format="PNG", optimize=True)
+    return base64.b64encode(out.getvalue()).decode("ascii")
+
+
 def is_cloud_failure(exc: BaseException) -> bool:
     """A failure on the cloud provider's side, worth answering locally instead.
 
@@ -371,6 +402,14 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 logger.exception("could not resolve documents for %s", thread_id)
         route, route_note = await decide_route(request, thread_id, user_id)
         to_cloud = route["answer_with"] == "cloud"
+        references = await load_thread_references(thread_id, user_id)
+        reference_block = render_reference_block(references)
+        if to_cloud and route.get("allow_documents") and references:
+            # Passed in the run's config, not its state, so the images are
+            # never written to the checkpoint.
+            route["reference_images"] = [
+                {"name": r.name, "data": png_for_cloud(r.png)} for r in references[:MAX_CLOUD_IMAGES]
+            ]
 
         async def run_turn(controller: RunController):
             tool_calls = {}
@@ -480,7 +519,8 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
 
             try:
                 try:
-                    await consume({"messages": inputs, "documents": document_block}, configurable)
+                    await consume({"messages": inputs, "documents": document_block,
+                                   "references": reference_block}, configurable)
                 except Exception as exc:
                     if not (to_cloud and is_cloud_failure(exc)):
                         raise

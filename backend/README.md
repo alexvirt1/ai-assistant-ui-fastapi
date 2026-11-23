@@ -148,7 +148,7 @@ until 13:00 (...)") and makes no Ollama load or unload calls of its own; chat
 turns still run, and one that starts during a reservation is logged as a
 conflict. A missing or expired file means free; an unreadable one counts as
 reserved until fixed. After images, the chat model is preloaded only once the
-card has `IMAGE_HANDBACK_FREE_BYTES` free (default 8.5 GB), waiting up to 30 s.
+card has `IMAGE_HANDBACK_FREE_BYTES` free (default 9.5 GB), waiting up to 30 s.
 
 Images are stored in the `chat_images` table and deleted with their chat.
 
@@ -157,6 +157,34 @@ Images are stored in the `chat_images` table and deleted with their chat.
 | `GET /api/images/models` | Image models available now, and the default. |
 | `GET /api/images/{id}` | The PNG; 404 if not yours, 410 once deleted. |
 | `DELETE /api/images/{id}` | Delete for good (the row stays as a tombstone, without the bytes). |
+
+### Reference photos
+
+Photos attached to a message (PNG, JPEG, GIF or WebP, up to 20 MB) make a
+generated image look like them; the code is in `app/references/`.
+
+- **Cleaning on upload:** the first frame of a GIF, the EXIF orientation
+  applied and then all metadata dropped (phone photos lose their GPS position),
+  transparency flattened onto white, at most 2048 px, stored as PNG in the
+  `chat_references` table. Deleted with their chat.
+- **What the model sees:** the message carries
+  `<reference-image id="…" name="…" />` instead of the picture, and the system
+  prompt lists the chat's photos. `qwen3:8b` can't see images; it passes the ids
+  to `generate_image(reference_ids=[…])`.
+- **Generation:** with references the model is always FLUX.2 Klein. Each photo
+  is uploaded to ComfyUI's temp folder just before the job, under a unique name,
+  and fed through a `ReferenceLatent` chain. At most 4 photos and 2 MP in total
+  (1 MP each for 1–2 photos, 0.5 MP each for 3–4); 1–2 work best. AI-1 deletes
+  temp files after an hour.
+- **Claude (hybrid mode):** sees the photos (at most 1024 px) only when the
+  chat's Docs box is ticked; generation always stays on AI-1.
+
+| Endpoint | |
+| --- | --- |
+| `POST /api/references` | Upload (multipart `file`, `threadId`); 413 too large, 415 not an image, 403 someone else's chat. |
+| `GET /api/references/{id}` | The PNG; 404 if not yours, 410 once deleted. |
+| `DELETE /api/references/{id}` | Delete for good (tombstone kept). |
+| `GET /api/chats/{id}/references` | The chat's photos. |
 
 ### Model roles
 

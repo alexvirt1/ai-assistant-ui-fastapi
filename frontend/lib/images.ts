@@ -8,6 +8,8 @@
  * or plain text starting "Error:" when generation failed.
  */
 
+import { resultReferences } from "./references";
+
 export type GeneratedImageInfo = {
   imageId: string;
   model: string;
@@ -15,6 +17,8 @@ export type GeneratedImageInfo = {
   height: number;
   seed: number;
   prompt: string;
+  /** The reference photos it was made from, if any. */
+  references: { id: string; name: string }[];
 };
 
 export type ParsedImageResult =
@@ -36,6 +40,7 @@ export function parseImageResult(result: unknown): ParsedImageResult {
           height: Number(record.height) || 1024,
           seed: Number(record.seed) || 0,
           prompt: String(record.prompt ?? ""),
+          references: resultReferences(record),
         },
       };
     }

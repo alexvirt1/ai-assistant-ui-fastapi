@@ -6,6 +6,7 @@ tests see what a reader of the file would, not what was handed to fpdf2.
 
 import base64
 import io
+import json
 import re
 from datetime import datetime, timezone
 
@@ -504,3 +505,73 @@ def test_default_user_is_what_the_endpoint_checks_against(monkeypatch):
     app.include_router(routes.make_chats_router(FakeGraph([])))
     TestClient(app).get("/api/chats/t1/export.pdf")
     assert seen["user"] == DEFAULT_USER_ID
+
+
+def marker(ref_id: str, name: str) -> str:
+    """As the frontend writes it (lib/references.ts formatReferenceMarker)."""
+    return f'\n<reference-image id="{ref_id}" name="{name}" />\n'
+
+
+def image_call(image_id: str, refs: list[dict]) -> dict:
+    return {
+        "type": "tool-call", "toolCallId": "c1", "toolName": "generate_image", "args": {},
+        "result": json.dumps({"image_id": image_id, "prompt": "astronaut dog", "references": refs}),
+    }
+
+
+class TestReferences:
+    def test_markers_leave_the_text_and_become_thumbnails(self):
+        message = said("user", "Draw this dog as an astronaut" + marker("r1", "dog.jpg")
+                       + marker("r2", "cat.png"))
+        pdf = render_chat_pdf("t", [message],
+                              references={"r1": (png(), "dog.jpg"), "r2": (png(20, 40), "cat.png")})
+        text = text_of(pdf)
+        assert "Draw this dog as an astronaut" in text
+        assert "reference-image" not in text and "r1" not in text
+        assert images_in(pdf) == 2
+
+    def test_a_deleted_photo_is_named_not_drawn(self):
+        pdf = render_chat_pdf("t", [said("user", "Like this" + marker("r1", "dog.jpg"))],
+                              references={"r1": (None, "dog.jpg")})
+        assert images_in(pdf) == 0
+        assert "[Photo deleted: dog.jpg]" in text_of(pdf)
+
+    def test_a_message_of_only_a_photo(self):
+        pdf = render_chat_pdf("t", [said("user", marker("r1", "dog.jpg"))],
+                              references={"r1": (png(), "dog.jpg")})
+        assert images_in(pdf) == 1 and "reference-image" not in text_of(pdf)
+
+    def test_unknown_marker_is_dropped_quietly(self):
+        pdf = render_chat_pdf("t", [said("user", "Hi" + marker("gone", "x.png"))])
+        assert images_in(pdf) == 0 and "reference-image" not in text_of(pdf)
+
+    def test_an_image_lists_the_references_it_was_made_from(self):
+        reply = {"role": "assistant", "content": [image_call("i1", [{"id": "r1", "name": "dog.jpg"}])]}
+        pdf = render_chat_pdf("t", [reply], images={"i1": (png(64, 64), "astronaut dog")},
+                              references={"r1": (png(), "dog.jpg")})
+        assert images_in(pdf) == 2
+        assert "Made from these reference photos" in text_of(pdf)
+
+    def test_many_thumbnails_wrap(self):
+        # Distinct sizes: fpdf2 stores identical images once.
+        refs = {f"r{i}": (png(400, 400 + i), f"{i}.png") for i in range(12)}
+        text = "".join(marker(k, v[1]) for k, v in refs.items())
+        pdf = render_chat_pdf("t", [said("user", text)], references=refs)
+        assert images_in(pdf) == 12
+
+    def test_the_endpoint_passes_the_chats_references(self, monkeypatch):
+        from app.references.store import StoredReference
+
+        async def list_for_thread(thread_id, user_id, include_deleted=False):
+            assert include_deleted
+            now = datetime.now(timezone.utc)
+            return [StoredReference(id="r1", thread_id=thread_id, name="dog.jpg", width=30,
+                                    height=20, png=png(), created_at=now, deleted_at=None)]
+
+        monkeypatch.setattr(routes.reference_store, "list_for_thread", list_for_thread)
+        client = client_for(monkeypatch, {"t1": "Dog"},
+                            [HumanMessage(content=[{"type": "text", "text": "Like this"
+                                                    + marker("r1", "dog.jpg")}])])
+        response = client.get("/api/chats/t1/export.pdf")
+        assert response.status_code == 200
+        assert images_in(response.content) == 1

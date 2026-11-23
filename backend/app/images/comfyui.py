@@ -27,6 +27,7 @@ with someone else's work, generation fails at once with a message saying so.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -77,6 +78,8 @@ class ImageModel:
     nodes: tuple[str, ...]
     default_steps: int
     build: Callable[["ImageRequest"], dict]
+    # Whether the workflow can take reference images (ImageRequest.references).
+    supports_references: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,23 @@ class ImageRequest:
     height: int
     seed: int
     steps: int
+    # Reference images already uploaded to ComfyUI, as LoadImage names
+    # ("ai-assistant-ui-<job>-ref0.png [temp]"). Only for models that
+    # support_references.
+    references: tuple[str, ...] = ()
+
+
+# Total reference area in megapixels, as advised by the AI-1 agent: each
+# reference adds about as many image tokens as the image itself, so 4 refs at
+# 1 MP would be about 5x the sequence length on a 12 GB GPU.
+REFERENCE_TOTAL_MEGAPIXELS = 2.0
+MAX_REFERENCES = 4
+REFERENCE_NODES = ("LoadImage", "ImageScaleToTotalPixels", "VAEEncode", "ReferenceLatent")
+
+
+def reference_megapixels(count: int) -> float:
+    """Size each reference is scaled to: 1 MP each, up to the total cap."""
+    return min(1.0, REFERENCE_TOTAL_MEGAPIXELS / max(count, 1))
 
 
 def _z_image_turbo(req: ImageRequest) -> dict:
@@ -119,9 +139,11 @@ def _z_image_turbo(req: ImageRequest) -> dict:
 
 
 def _flux2_klein(req: ImageRequest) -> dict:
-    # Settings from AI-1's 08_klein_poster workflow, without its reference
-    # images: cfg 1, euler, the Flux2 scheduler (8 steps here, 4 there).
-    return {
+    # Settings from AI-1's 08_klein_poster workflow: cfg 1, euler, the Flux2
+    # scheduler (8 steps here, 4 there). References as in its
+    # 02_klein_keyframe_refs: each one is scaled, encoded and attached to both
+    # the prompt and the zeroed negative with ReferenceLatent.
+    workflow = {
         "1": {"class_type": "UNETLoader",
               "inputs": {"unet_name": "flux-2-klein-4b.safetensors",
                          "weight_dtype": "default"}},
@@ -147,6 +169,24 @@ def _flux2_klein(req: ImageRequest) -> dict:
         "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
         "13": {"class_type": OUTPUT_NODE, "inputs": {"images": ["12", 0]}},
     }
+    positive, negative = ["4", 0], ["5", 0]
+    megapixels = reference_megapixels(len(req.references))
+    for i, name in enumerate(req.references):
+        load, scale, encode, pos, neg = (f"ref{i}_{part}" for part in
+                                         ("load", "scale", "encode", "pos", "neg"))
+        workflow[load] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        workflow[scale] = {"class_type": "ImageScaleToTotalPixels",
+                           "inputs": {"image": [load, 0], "upscale_method": "lanczos",
+                                      "megapixels": megapixels, "resolution_steps": 16}}
+        workflow[encode] = {"class_type": "VAEEncode",
+                            "inputs": {"pixels": [scale, 0], "vae": ["3", 0]}}
+        workflow[pos] = {"class_type": "ReferenceLatent",
+                         "inputs": {"conditioning": positive, "latent": [encode, 0]}}
+        workflow[neg] = {"class_type": "ReferenceLatent",
+                         "inputs": {"conditioning": negative, "latent": [encode, 0]}}
+        positive, negative = [pos, 0], [neg, 0]
+    workflow["6"]["inputs"].update(positive=positive, negative=negative)
+    return workflow
 
 
 MODELS: dict[str, ImageModel] = {
@@ -173,11 +213,12 @@ MODELS: dict[str, ImageModel] = {
             nodes=("UNETLoader", "CLIPLoader", "VAELoader", "CLIPTextEncode",
                    "ConditioningZeroOut", "CFGGuider", "KSamplerSelect",
                    "Flux2Scheduler", "RandomNoise", "EmptyFlux2LatentImage",
-                   "SamplerCustomAdvanced", "VAEDecode", OUTPUT_NODE),
+                   "SamplerCustomAdvanced", "VAEDecode", OUTPUT_NODE) + REFERENCE_NODES,
             # The distilled model's usual 4 steps lost detail on long prompts
             # (tested live); 8 keeps more of it at roughly twice the sampling time.
             default_steps=8,
             build=_flux2_klein,
+            supports_references=True,
         ),
     )
 }
@@ -280,14 +321,42 @@ def open_ws(url: str):
     return connect(url, max_size=None, open_timeout=10)
 
 
+async def upload_reference(client: httpx.AsyncClient, png: bytes, name: str) -> str:
+    """Upload one reference to ComfyUI's temp folder; return its LoadImage name.
+
+    Temp, never input/ (permanent by design): AI-1 deletes temp files older
+    than an hour. Uploaded right before the job that uses it, under a name no
+    other job uses, as agreed with the AI-1 agent.
+    """
+    try:
+        resp = await client.post(
+            "/upload/image",
+            files={"image": (name, png, "image/png")},
+            data={"type": "temp", "overwrite": "false"},
+        )
+        resp.raise_for_status()
+        info = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ImageGenerationError(f"Could not send a reference image to AI-1 ({exc}).") from exc
+    path = f"{info['subfolder']}/{info['name']}" if info.get("subfolder") else info["name"]
+    return f"{path} [temp]"
+
+
 async def generate(model: ImageModel, req: ImageRequest,
-                   client: httpx.AsyncClient | None = None) -> bytes:
-    """Run one workflow and return the PNG it produced."""
+                   client: httpx.AsyncClient | None = None,
+                   references: list[bytes] | tuple[bytes, ...] = ()) -> bytes:
+    """Run one workflow and return the PNG it produced.
+
+    `references` are PNGs to condition on; they are uploaded just before the
+    job is queued and replace req.references.
+    """
     if not base_url():
         raise ImageGenerationError("Image generation is not configured (COMFYUI_BASE_URL).")
+    if references and not model.supports_references:
+        raise ImageGenerationError(f"{model.name} cannot use reference images.")
+    if len(references) > MAX_REFERENCES:
+        raise ImageGenerationError(f"At most {MAX_REFERENCES} reference images per image.")
 
-    workflow = model.build(req)
-    output_node = next(k for k, v in workflow.items() if v["class_type"] == OUTPUT_NODE)
     client_id = f"{CLIENT_ID}-{uuid.uuid4().hex[:12]}"
 
     owns_client = client is None
@@ -309,6 +378,12 @@ async def generate(model: ImageModel, req: ImageRequest,
 
         prompt_id = None
         try:
+            if references:
+                names = [await upload_reference(client, png, f"{client_id}-ref{i}.png")
+                         for i, png in enumerate(references)]
+                req = dataclasses.replace(req, references=tuple(names))
+            workflow = model.build(req)
+            output_node = next(k for k, v in workflow.items() if v["class_type"] == OUTPUT_NODE)
             try:
                 resp = await client.post(
                     "/prompt", json={"prompt": workflow, "client_id": client_id})

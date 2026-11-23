@@ -1,19 +1,22 @@
 "use client";
 
-import { AssistantRuntimeProvider, useEdgeRuntime } from "@assistant-ui/react";
-import { Thread } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, Thread, useEdgeRuntime } from "@assistant-ui/react";
 import { useMemo, useSyncExternalStore } from "react";
 
 import type { AttachmentLimits } from "@/lib/attachments";
 import type { RestoredMessage } from "@/lib/chats";
 import { getDocuments, subscribe } from "@/lib/documentStore";
 
+import { AttachmentNotice } from "./attachments/AttachmentNotice";
+import { ChatAttachmentAdapter } from "./attachments/ChatAttachmentAdapter";
 import { DocumentChips } from "./attachments/DocumentChips";
+import { ImageReferenceAdapter } from "./attachments/ImageReferenceAdapter";
 import { TextAttachmentAdapter } from "./attachments/TextAttachmentAdapter";
 import { ExportPdfButton } from "./chats/ExportPdfButton";
 import { StreamRecovery } from "./chats/StreamRecovery";
 import { ThreadActivity } from "./chats/ThreadActivity";
 import { MarkdownText } from "./MarkdownText";
+import { UserMessageWithReferences } from "./references/UserMessageWithReferences";
 import { ModelPicker } from "./models/ModelPicker";
 import { ThemeToggle } from "./ThemeToggle";
 import {
@@ -49,13 +52,20 @@ export function MyAssistant({
 }) {
   // Memoised rather than rebuilt per render: the runtime holds a reference to
   // the adapter, and churning it every render would be pointless work.
+  // Text files and reference photos share the paperclip: the composite picks
+  // the adapter whose `accept` matches the file, and says why when none does.
   const attachmentAdapter = useMemo(
     () =>
-      new TextAttachmentAdapter({
-        maxChars: attachmentLimits?.maxChars,
-        maxBytes: attachmentLimits?.maxBytes,
-      }),
-    [attachmentLimits?.maxChars, attachmentLimits?.maxBytes],
+      new ChatAttachmentAdapter([
+        new TextAttachmentAdapter({
+          maxChars: attachmentLimits?.maxChars,
+          maxBytes: attachmentLimits?.maxBytes,
+        }),
+        // Photos are uploaded to this chat. ChatShell remounts this pane to
+        // switch chats, so threadId changes only when a new chat gets its id.
+        new ImageReferenceAdapter(() => threadId),
+      ]),
+    [attachmentLimits?.maxChars, attachmentLimits?.maxBytes, threadId],
   );
 
   // Re-read on every change so a newly attached document is included from the
@@ -130,8 +140,12 @@ export function MyAssistant({
         </header>
         {/* min-h-0 so the Thread's own viewport scrolls instead of the flex
             item growing past the container. */}
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1">
+          <AttachmentNotice />
           <Thread
+            // Reference photos come back from a reload as markers in the
+            // text; this user message shows them as thumbnails.
+            components={{ UserMessage: UserMessageWithReferences }}
             assistantMessage={{
               components: {
                 Text: MarkdownText,

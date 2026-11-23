@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..identity import current_user_id
 from ..images import store as image_store
+from ..references import store as reference_store
 from . import store as chat_store
 from .export import Diagram, content_disposition, diagram_key, pdf_filename, render_chat_pdf
 from .messages import to_core_messages
@@ -162,8 +163,11 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         # a streaming answer in another tab would stall while it ran.
         stored = await image_store.get_thread_images(thread_id, user_id)
         images = {key: (image.png, image.prompt) for key, image in stored.items()}
+        refs = await reference_store.list_for_thread(thread_id, user_id, include_deleted=True)
+        references = {str(r.id): (None if r.deleted else r.png, r.name) for r in refs}
         pdf = await run_in_threadpool(
-            render_chat_pdf, title, to_core_messages(messages), None, diagrams, images
+            render_chat_pdf, title, to_core_messages(messages), None, diagrams, images,
+            references,
         )
         return Response(
             content=pdf,
@@ -195,6 +199,16 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         if thread is None:
             raise HTTPException(status_code=404, detail="No such chat")
         return ChatSummary.of(thread)
+
+    @router.get("/{thread_id}/references")
+    async def get_chat_references(
+        thread_id: str,
+        user_id: str = Depends(current_user_id),
+    ) -> list[dict]:
+        """The chat's reference photos, oldest first (deleted ones left out)."""
+        if await chat_store.get_thread(thread_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="No such chat")
+        return [r.describe() for r in await reference_store.list_for_thread(thread_id, user_id)]
 
     @router.patch("/{thread_id}")
     async def update_chat(

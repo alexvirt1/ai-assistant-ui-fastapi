@@ -5,6 +5,7 @@ monkeypatched functions, so none of this needs AI-1.
 """
 
 import asyncio
+import uuid
 import json
 from io import BytesIO
 
@@ -151,7 +152,7 @@ class FakeComfy:
 def request(prompt="a lighthouse at dusk", **kw) -> ImageRequest:
     return ImageRequest(prompt=prompt, width=kw.get("width", 1024),
                         height=kw.get("height", 1024), seed=kw.get("seed", 7),
-                        steps=kw.get("steps", 9))
+                        steps=kw.get("steps", 9), references=kw.get("references", ()))
 
 
 # --- workflows ---------------------------------------------------------------
@@ -166,7 +167,8 @@ def test_workflow_carries_values_as_inputs_only(name):
     texts = [n["inputs"]["text"] for n in workflow.values() if n["class_type"] == "CLIPTextEncode"]
     assert texts == [hostile]
     classes = {n["class_type"] for n in workflow.values()}
-    assert classes == set(model.nodes)
+    # Reference nodes are only in the graph when references are given.
+    assert classes == set(model.nodes) - set(comfyui.REFERENCE_NODES)
     # Never written to ComfyUI's output folder, so no lasting copy on AI-1.
     assert "SaveImage" not in classes
     values = json.dumps(workflow)
@@ -325,7 +327,7 @@ def fake_service(monkeypatch):
     async def available():
         return ["z-image-turbo", "flux2-klein"]
 
-    async def generate(model, req):
+    async def generate(model, req, references=()):
         calls["request"] = (model.name, req)
         return calls.get("png", png_bytes())
 
@@ -394,11 +396,11 @@ async def test_service_hands_gpu_over_and_stores(fake_service):
     assert fake_service["saved"]["user_id"] == "alice"
     assert result == {"image_id": "11111111-1111-1111-1111-111111111111",
                       "model": "z-image-turbo", "width": 832, "height": 1216,
-                      "seed": 5, "prompt": "a red fox"}
+                      "seed": 5, "prompt": "a red fox", "references": []}
 
 
 async def test_service_frees_memory_even_on_failure(fake_service, monkeypatch):
-    async def failing(model, req):
+    async def failing(model, req, references=()):
         raise ImageGenerationError("boom")
     monkeypatch.setattr(service.comfyui, "generate", failing)
     with pytest.raises(ImageGenerationError):
@@ -524,7 +526,7 @@ async def test_batch_hands_gpu_back_once(fake_service, monkeypatch):
     import asyncio
     started = []
 
-    async def slow_generate(model, req):
+    async def slow_generate(model, req, references=()):
         started.append(req.seed)
         await asyncio.sleep(0.01)
         return png_bytes()
@@ -682,7 +684,7 @@ async def test_service_refuses_during_reservation(fake_service):
 
 
 async def test_handback_skipped_when_reserved_mid_batch(fake_service, monkeypatch):
-    async def generate(model, req):
+    async def generate(model, req, references=()):
         # AI-1 takes a reservation while the image is being generated.
         fake_service["reservation"] = comfyui.Reservation("ai-1", NOW + timedelta(hours=1), "")
         return png_bytes()
@@ -762,3 +764,141 @@ async def test_wait_until_released_ignores_memory_torch_still_holds(monkeypatch)
     async with client:
         assert await comfyui.wait_until_released(client, timeout=5)
     assert len(polls) == 2   # 11 GB "free" with 3 GB still in torch's cache was not enough
+
+
+
+# --- reference images ----------------------------------------------------------
+
+def test_klein_chains_references_into_both_conditionings():
+    refs = ("a.png [temp]", "b.png [temp]")
+    workflow = comfyui.MODELS["flux2-klein"].build(request(references=refs, steps=8))
+    loads = [n["inputs"]["image"] for n in workflow.values() if n["class_type"] == "LoadImage"]
+    assert loads == list(refs)
+    guider = workflow["6"]["inputs"]
+    assert guider["positive"] == ["ref1_pos", 0] and guider["negative"] == ["ref1_neg", 0]
+    assert workflow["ref1_pos"]["inputs"]["conditioning"] == ["ref0_pos", 0]
+    assert workflow["ref0_pos"]["inputs"]["conditioning"] == ["4", 0]
+    assert workflow["ref0_neg"]["inputs"]["conditioning"] == ["5", 0]
+    for node in workflow.values():
+        for value in node["inputs"].values():
+            if isinstance(value, list):
+                assert value[0] in workflow
+
+
+@pytest.mark.parametrize("count, megapixels", [(1, 1.0), (2, 1.0), (3, 2 / 3), (4, 0.5)])
+def test_reference_area_capped_at_2_mp(count, megapixels):
+    refs = tuple(f"r{i}.png [temp]" for i in range(count))
+    workflow = comfyui.MODELS["flux2-klein"].build(request(references=refs))
+    sizes = [n["inputs"]["megapixels"] for n in workflow.values()
+             if n["class_type"] == "ImageScaleToTotalPixels"]
+    assert sizes == [pytest.approx(megapixels)] * count
+
+
+async def test_generate_uploads_references_to_temp_before_queueing():
+    fake = FakeComfy()
+    uploads = []
+    original = fake.handler
+
+    def handler(request):
+        if request.url.path == "/upload/image":
+            body = request.content
+            assert b'name="type"\r\n\r\ntemp' in body and b'name="overwrite"\r\n\r\nfalse' in body
+            uploads.append(request)
+            fake.events.append("upload")
+            return httpx.Response(200, json={"name": f"up{len(uploads)}.png", "subfolder": "",
+                                             "type": "temp"})
+        return original(request)
+
+    fake.handler = handler
+    async with fake.client() as client:
+        png = await comfyui.generate(comfyui.MODELS["flux2-klein"], request(steps=8), client,
+                                     references=[png_bytes(), png_bytes()])
+    assert png == png_bytes()
+    assert fake.events[:4] == ["ws-open", "upload", "upload", "prompt"]
+    loads = [n["inputs"]["image"] for n in fake.submitted["prompt"].values()
+             if n["class_type"] == "LoadImage"]
+    assert loads == ["up1.png [temp]", "up2.png [temp]"]
+
+
+async def test_generate_refuses_references_for_other_models():
+    fake = FakeComfy()
+    async with fake.client() as client:
+        with pytest.raises(ImageGenerationError, match="cannot use reference images"):
+            await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client,
+                                   references=[png_bytes()])
+        with pytest.raises(ImageGenerationError, match="At most 4"):
+            await comfyui.generate(comfyui.MODELS["flux2-klein"], request(), client,
+                                   references=[png_bytes()] * 5)
+    assert fake.submitted is None
+
+
+def stored_ref(thread_id="t", deleted=False):
+    from app.references.store import StoredReference
+
+    return StoredReference(id=uuid.uuid4(), thread_id=thread_id, name="dog.jpg", width=300,
+                           height=400, png=None if deleted else png_bytes(),
+                           created_at=datetime.now(timezone.utc),
+                           deleted_at=datetime.now(timezone.utc) if deleted else None)
+
+
+@pytest.fixture
+def refs_in_store(monkeypatch):
+    refs = {}
+
+    async def get(ref_id, user_id):
+        return refs.get(ref_id)
+
+    monkeypatch.setattr(service.reference_store, "get", get)
+    return refs
+
+
+async def test_service_uses_klein_with_references(fake_service, refs_in_store, monkeypatch):
+    seen = {}
+
+    async def generate(model, req, references=()):
+        seen.update(model=model.name, references=list(references))
+        return png_bytes()
+
+    monkeypatch.setattr(service.comfyui, "generate", generate)
+    ref = stored_ref()
+    refs_in_store[ref.id] = ref
+    result = await service.generate_for_chat(prompt="this dog as an astronaut", thread_id="t",
+                                             user_id="u", model="z-image-turbo",
+                                             reference_ids=[str(ref.id)])
+    assert seen["model"] == "flux2-klein" and seen["references"] == [ref.png]
+    assert result["references"] == [{"id": str(ref.id), "name": "dog.jpg"}]
+    assert "note" not in result
+    assert fake_service["saved"]["reference_ids"] == [str(ref.id)]
+
+
+async def test_service_flags_three_or_more_references(fake_service, refs_in_store):
+    ids = []
+    for _ in range(3):
+        ref = stored_ref()
+        refs_in_store[ref.id] = ref
+        ids.append(str(ref.id))
+    result = await service.generate_for_chat(prompt="x", thread_id="t", user_id="u",
+                                             reference_ids=ids)
+    assert "lower resolution" in result["note"]
+
+
+@pytest.mark.parametrize("make, message", [
+    (lambda: stored_ref(thread_id="other-chat"), "no reference image"),
+    (lambda: stored_ref(deleted=True), "was deleted"),
+])
+async def test_service_rejects_bad_references(fake_service, refs_in_store, make, message):
+    ref = make()
+    refs_in_store[ref.id] = ref
+    with pytest.raises(ImageGenerationError, match=message):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u",
+                                        reference_ids=[str(ref.id)])
+    assert fake_service["unloaded"] == []
+
+
+async def test_service_rejects_unknown_and_too_many(fake_service, refs_in_store):
+    with pytest.raises(ImageGenerationError, match="no reference image not-a-uuid"):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u",
+                                        reference_ids=["not-a-uuid"])
+    with pytest.raises(ImageGenerationError, match="At most 4"):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u",
+                                        reference_ids=[str(uuid.uuid4()) for _ in range(5)])
