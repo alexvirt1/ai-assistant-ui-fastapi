@@ -15,7 +15,7 @@ recognisable.
 | Question | Decision |
 |---|---|
 | Model | **FLUX.2 Klein 4B** for every image with references: the only model on AI-1 with reference conditioning. |
-| References per image | **Up to 4.** |
+| References per image | **Up to 4**, with a total reference area of about **2 MP**, as the AI-1 agent advised: 1 or 2 references at 1 MP each, 3 or 4 at about 0.5 MP each. |
 | Claude (hybrid mode) | The chat's **Docs** checkbox also lets Claude **see** the reference images in a handed-over turn; otherwise Claude only gets their names. |
 | Describing photos with a vision model (`qwen3-vl:8b`) | **Later**, as an option (phase 4). |
 | Workflow | Plan first, on this branch. |
@@ -36,6 +36,26 @@ the app: CFGGuider at 1.0, euler, the Flux2Scheduler, RandomNoise and EmptyFlux2
 
 ComfyUI accepts uploads with `POST /upload/image` (multipart, with a `type` field: input, temp
 or output). `LoadImage` takes uploaded images.
+
+**The AI-1 agent's answers (2026-11-23):**
+
+- **Temp uploads:** `type=temp` plus `LoadImage("name.png [temp]")` works on AI-1. Use unique
+  names; a repeated name is renamed, not overwritten.
+- **Temp is not cleared soon.** ComfyUI empties its temp folder only at startup (and not in every
+  configuration), and restarts are rare.
+- **Temp files are readable by any LAN host** that reaches :8188, via `/view?type=temp`.
+- **The same is true of the PNGs the app already generates:** `PreviewImage` writes to temp. So
+  "no lasting copy on AI-1" holds only until the next restart, not right away. Two fixes:
+  - Outputs: `SaveImageWebsocket` (installed) sends the PNG over ComfyUI's websocket without
+    writing a file. This needs the `websockets` package declared, which is installed today only
+    as a dependency of a dependency, so it needs the owner's approval.
+  - Inputs: there is no node for inline images, so reference photos must be uploaded as files.
+    The AI-1 agent is asking the owner for an hourly purge of temp files older than about
+    60 minutes. Never `input/`, which is permanent by design.
+- **Load:** each reference at about 1 MP adds about as many image tokens as the target itself.
+  4 refs at 1 MP is about 5x the sequence length, and much more attention work. Hence the cap of
+  about 2 MP in total. Plain Klein at 1 MP / 8 steps takes about 15 s warm on AI-1. The AI-1 agent
+  offered to benchmark 1, 2 and 4 references (time, peak VRAM) once the workflow graph exists.
 
 **What to expect:** similar style, colours, shape and objects. Faces will be recognisable but not
 exact: AI-1 has no dedicated face-identity model (such as PuLID or InstantID). Adding one is the
@@ -125,7 +145,10 @@ sequenceDiagram
 
 ### Privacy
 
-- Photos of people stay on ai-2 and AI-1. ComfyUI gets them only in its temp folder.
+- Photos of people stay on ai-2 and AI-1. ComfyUI gets them only in its temp folder. They stay
+  there until the purge or a ComfyUI restart, and are readable from the LAN on :8188 in the
+  meantime (see the AI-1 agent's answers above). Generated images: switch to
+  `SaveImageWebsocket` so they never touch AI-1's disk.
 - They go to Claude only when the chat's Docs box is ticked.
 - EXIF metadata, including GPS location, is removed on upload.
 - Deleting a reference, or its chat, removes the stored photo.
