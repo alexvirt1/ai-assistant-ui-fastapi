@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-23
+
 **Every person in the reference photos comes out.** With photos of two people, the image showed
 one of them and a generic stranger. FLUX.2 Klein follows the text, and the chat model can't see
 the photos, so its prompt said "two pirates" or "his friend". Now:
