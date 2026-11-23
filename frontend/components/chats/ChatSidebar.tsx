@@ -145,7 +145,7 @@ export function ChatSidebar({
   }
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-gray-200 dark:border-gray-800">
+    <aside className="flex h-full w-full shrink-0 flex-col border-r border-gray-200 md:w-64 dark:border-gray-800">
       {/* shrink-0 so the controls stay put while the list below scrolls. */}
       <div className="shrink-0 space-y-2 border-b border-gray-200 p-3 dark:border-gray-800">
         <div className="flex gap-2">

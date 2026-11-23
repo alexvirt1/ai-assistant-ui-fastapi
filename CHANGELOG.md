@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**The chat fits phone screens.** On a phone the chat list used to take half the width, so answers
+wrapped one word per line, and the header's controls made the page scroll sideways.
+
+- **Chat list:** below 768px it is a drawer. The menu button in the header opens it; a tap
+  outside, Escape, or picking a chat closes it.
+- **Header:** wraps, with short labels on phones ("Claude", "PDF") and narrower pickers.
+- **Model menu:** opens as a full-width panel.
+
+Desktop is unchanged.
+
 ## [1.9.2] - 2026-11-23
 
 **A failed Claude turn is answered locally, with a plain explanation.** When Claude fails on its

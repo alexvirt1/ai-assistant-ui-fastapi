@@ -116,7 +116,7 @@ export function ModelPicker() {
         aria-expanded={open}
         aria-label={current ? `Model: ${current}` : "Choose model"}
         title={isRunning ? "Model can be changed once the answer finishes" : undefined}
-        className="flex h-8 max-w-[16rem] items-center gap-1.5 rounded-md border border-gray-200 px-2.5 text-xs text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+        className="flex h-8 max-w-[8rem] items-center sm:max-w-[16rem] gap-1.5 rounded-md border border-gray-200 px-2.5 text-xs text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
       >
         <span className="min-w-0 truncate font-medium">{current ?? "Model"}</span>
         <span aria-hidden className="text-gray-400">
@@ -125,7 +125,7 @@ export function ModelPicker() {
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-20 mt-1 max-h-[24rem] w-80 overflow-y-auto rounded-md border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+        <div className="fixed inset-x-3 top-24 z-20 max-h-[60vh] overflow-y-auto sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-1 sm:max-h-[24rem] sm:w-80 rounded-md border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
           {error ? (
             <p role="alert" className="px-2 py-2 text-xs text-amber-700 dark:text-amber-500">
               {error}
