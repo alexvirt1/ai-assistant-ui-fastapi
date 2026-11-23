@@ -121,7 +121,10 @@ def convert_to_langchain_messages(
             content = []
             for p in msg.content:
                 if isinstance(p, LanguageModelTextPart):
-                    content.append({"type": "text", "text": p.text})
+                    # NUL can't be stored: Postgres rejects it in text and
+                    # JSONB, so registering the chat failed and the chat was
+                    # never listed (a photo sent as a "text file" in 1.9.4).
+                    content.append({"type": "text", "text": p.text.replace("\x00", "")})
                 elif isinstance(p, LanguageModelImagePart):
                     content.append({"type": "image_url", "image_url": p.image})
             result.append(HumanMessage(content=content))
@@ -320,6 +323,13 @@ async def note_reservation_conflict(thread_id: str) -> None:
     if held is not None:
         logger.warning("chat turn during a GPU reservation on AI-1 (%s); the chat model "
                        "will be loaded there. Report this to the AI-1 agent.", held.describe())
+
+
+# Chats with a turn running now (one backend process).
+ACTIVE_TURNS: set[str] = set()
+
+BUSY_NOTE = ("_A reply is still being written in this chat, so this message was not sent "
+             "to the model. Wait for it to finish, then send again._")
 
 
 async def keep_alive(controller: RunController) -> None:
@@ -562,6 +572,21 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 logger.exception("could not touch thread %s", thread_id)
 
         async def run(controller: RunController):
+            # One turn per chat at a time. Two at once (a second Send while
+            # photos uploaded, or two tabs) wrote to the same checkpoint and
+            # raced for the GPU: one generated an image while the other loaded
+            # the chat model and ran out of memory. Checked and claimed with
+            # no await in between, so two requests can't both pass.
+            if thread_id in ACTIVE_TURNS:
+                controller.append_text(BUSY_NOTE)
+                return
+            ACTIVE_TURNS.add(thread_id)
+            try:
+                await run_with_heartbeat(controller)
+            finally:
+                ACTIVE_TURNS.discard(thread_id)
+
+        async def run_with_heartbeat(controller: RunController):
             asyncio.create_task(note_reservation_conflict(thread_id))
             heartbeat = asyncio.create_task(keep_alive(controller))
             try:
