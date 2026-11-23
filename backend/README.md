@@ -127,6 +127,19 @@ model is unloaded before an image and reloaded after the last one of a batch,
 once ComfyUI has released its memory. Another client's job on ComfyUI makes the
 request fail at once instead of queueing.
 
+**Nothing is left on the GPU host.** The workflows end in `SaveImageWebsocket`.
+Each job opens ComfyUI's websocket with its own client id
+(`ai-assistant-ui-<job>`) before queueing, and receives the PNG as a binary
+frame; no file is written. Afterwards the job is deleted from ComfyUI's history,
+so the prompt does not stay in its memory. The stored PNG is then the only
+copy, and `DELETE /api/images/{id}` removes it for good.
+
+**Handing the GPU back.** After the last image of a batch, the chat model is
+preloaded only once the card has `IMAGE_HANDBACK_FREE_BYTES` (9.5 GB) free for
+other processes, measured as `vram_free - torch_vram_free` from ComfyUI's
+`/system_stats`. If it still lands partly on the CPU, it is unloaded and loaded
+once more.
+
 **Sharing the GPU host with its owner.** The AI-1 agent can reserve the GPU by
 writing ComfyUI userdata `gpu-reservation.json`
 (`{"holder": "ai-1", "until": "2026-11-21T18:00:00Z", "reason": "..."}`, UTC).

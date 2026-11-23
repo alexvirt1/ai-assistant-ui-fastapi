@@ -9,14 +9,17 @@ as plain values, so nothing the model writes can change the graph itself.
 
 The flow for one image:
 
-    POST /prompt            queue the workflow, get a prompt_id
-    GET  /history/<id>      poll until it has finished (or failed)
-    GET  /view?...          fetch the PNG it produced
+    WS   /ws?clientId=<job>   open first, so a fast job cannot finish unseen
+    POST /prompt             queue the workflow with the same client id
+    (websocket)              progress messages, then the PNG as a binary frame
+    POST /history {delete}   drop the job, so its prompt is not kept in memory
 
-The workflows end in PreviewImage, not SaveImage: preview images go to
-ComfyUI's temp folder, which ComfyUI empties when it restarts, instead of its
-output folder, which it keeps. The PNG the app stores is then the only lasting
-copy, so deleting it in the chat deletes the image.
+The workflows end in SaveImageWebsocket, which sends the PNG to the client
+that queued the job and writes no file. The PNG the app stores is then the
+only copy, so deleting it in the chat deletes the image. (Before 1.9.4 they
+ended in PreviewImage, whose files stayed in ComfyUI's temp folder - readable
+from the LAN - until ComfyUI restarted; since 2026-11-23 AI-1 also deletes
+temp files older than an hour.)
 
 The GPU on AI-1 is shared with AI-1's own image and video jobs, which can run
 for many minutes. A chat image does not queue behind them: if ComfyUI is busy
@@ -32,6 +35,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+import uuid
+
 import httpx
 
 
@@ -43,13 +48,14 @@ def timeout_seconds() -> float:
     return float(os.getenv("IMAGE_TIMEOUT_SECONDS", "180"))
 
 
-# Seconds between /history polls. An image takes 30-60 s on AI-1, most of it
-# loading the model from disk (it is freed after every image), so a second of
-# latency at the end is not noticeable.
+# Seconds between GPU-memory polls while waiting for ComfyUI to free its models.
 POLL_INTERVAL = 1.0
 
-# Identifies this app's jobs in ComfyUI's queue and history.
+# Identifies this app's jobs in ComfyUI's queue: each job's client id is this
+# prefix plus a job id, since SaveImageWebsocket sends the image only to the
+# client that queued the job.
 CLIENT_ID = "ai-assistant-ui"
+OUTPUT_NODE = "SaveImageWebsocket"
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +114,7 @@ def _z_image_turbo(req: ImageRequest) -> dict:
                          "negative": ["6", 0], "latent_image": ["7", 0],
                          "denoise": 1.0}},
         "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 0]}},
-        "10": {"class_type": "PreviewImage", "inputs": {"images": ["9", 0]}},
+        "10": {"class_type": OUTPUT_NODE, "inputs": {"images": ["9", 0]}},
     }
 
 
@@ -139,7 +145,7 @@ def _flux2_klein(req: ImageRequest) -> dict:
                "inputs": {"noise": ["9", 0], "guider": ["6", 0], "sampler": ["7", 0],
                           "sigmas": ["8", 0], "latent_image": ["10", 0]}},
         "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
-        "13": {"class_type": "PreviewImage", "inputs": {"images": ["12", 0]}},
+        "13": {"class_type": OUTPUT_NODE, "inputs": {"images": ["12", 0]}},
     }
 
 
@@ -154,7 +160,7 @@ MODELS: dict[str, ImageModel] = {
                    "vae": "ae.safetensors"},
             nodes=("UNETLoader", "ModelSamplingAuraFlow", "CLIPLoader", "VAELoader",
                    "CLIPTextEncode", "ConditioningZeroOut", "EmptySD3LatentImage",
-                   "KSampler", "VAEDecode", "PreviewImage"),
+                   "KSampler", "VAEDecode", OUTPUT_NODE),
             default_steps=9,
             build=_z_image_turbo,
         ),
@@ -167,7 +173,7 @@ MODELS: dict[str, ImageModel] = {
             nodes=("UNETLoader", "CLIPLoader", "VAELoader", "CLIPTextEncode",
                    "ConditioningZeroOut", "CFGGuider", "KSamplerSelect",
                    "Flux2Scheduler", "RandomNoise", "EmptyFlux2LatentImage",
-                   "SamplerCustomAdvanced", "VAEDecode", "PreviewImage"),
+                   "SamplerCustomAdvanced", "VAEDecode", OUTPUT_NODE),
             # The distilled model's usual 4 steps lost detail on long prompts
             # (tested live); 8 keeps more of it at roughly twice the sampling time.
             default_steps=8,
@@ -243,7 +249,7 @@ def _is_ours(item) -> bool:
     the client_id sent to /prompt in extra_data.
     """
     try:
-        return item[3].get("client_id") == CLIENT_ID
+        return str(item[3].get("client_id", "")).startswith(CLIENT_ID)
     except (IndexError, AttributeError, TypeError):
         return False
 
@@ -263,11 +269,26 @@ async def _queue_busy(client: httpx.AsyncClient) -> bool:
     return any(not _is_ours(item) for item in items)
 
 
+def ws_url(client_id: str) -> str:
+    return base_url().replace("http", "ws", 1) + f"/ws?clientId={client_id}"
+
+
+def open_ws(url: str):
+    """Connect to ComfyUI's websocket. Replaced in tests."""
+    from websockets.asyncio.client import connect
+
+    return connect(url, max_size=None, open_timeout=10)
+
+
 async def generate(model: ImageModel, req: ImageRequest,
                    client: httpx.AsyncClient | None = None) -> bytes:
     """Run one workflow and return the PNG it produced."""
     if not base_url():
         raise ImageGenerationError("Image generation is not configured (COMFYUI_BASE_URL).")
+
+    workflow = model.build(req)
+    output_node = next(k for k, v in workflow.items() if v["class_type"] == OUTPUT_NODE)
+    client_id = f"{CLIENT_ID}-{uuid.uuid4().hex[:12]}"
 
     owns_client = client is None
     client = client or httpx.AsyncClient(base_url=base_url(), timeout=30)
@@ -277,72 +298,93 @@ async def generate(model: ImageModel, req: ImageRequest,
                 raise ImageGenerationError(
                     "The image server on AI-1 is busy with another job. Try again in a few minutes."
                 )
-            resp = await client.post(
-                "/prompt", json={"prompt": model.build(req), "client_id": CLIENT_ID}
-            )
-        except httpx.HTTPError as exc:
+            ws_cm = open_ws(ws_url(client_id))
+            ws = await ws_cm.__aenter__()
+        except (httpx.HTTPError, OSError) as exc:
             raise ImageGenerationError(f"The image server on AI-1 is unreachable ({exc}).") from exc
-        if resp.status_code != 200:
-            # ComfyUI validates the workflow before queueing and explains
-            # what it rejected, e.g. a model file that is no longer there.
-            raise ImageGenerationError(f"The image server rejected the request: {_reason(resp)}")
-        prompt_id = resp.json()["prompt_id"]
+        except ImageGenerationError:
+            raise
+        except Exception as exc:  # websocket handshake errors
+            raise ImageGenerationError(f"The image server on AI-1 is unreachable ({exc}).") from exc
 
-        outputs = await _wait_for(client, prompt_id)
-        image = _first_image(outputs)
+        prompt_id = None
         try:
-            resp = await client.get("/view", params=image)
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ImageGenerationError(f"Could not download the image ({exc}).") from exc
-        return resp.content
+            try:
+                resp = await client.post(
+                    "/prompt", json={"prompt": workflow, "client_id": client_id})
+            except httpx.HTTPError as exc:
+                raise ImageGenerationError(
+                    f"The image server on AI-1 is unreachable ({exc}).") from exc
+            if resp.status_code != 200:
+                # ComfyUI validates the workflow before queueing and explains
+                # what it rejected, e.g. a model file that is no longer there.
+                raise ImageGenerationError(
+                    f"The image server rejected the request: {_reason(resp)}")
+            prompt_id = resp.json()["prompt_id"]
+            try:
+                async with asyncio.timeout(timeout_seconds()):
+                    return await receive_image(ws, prompt_id, output_node)
+            except TimeoutError:
+                # Take it off the queue so it does not occupy the GPU after
+                # the user has been told it failed.
+                try:
+                    await client.post("/queue", json={"delete": [prompt_id]})
+                    await client.post("/interrupt", json={"prompt_id": prompt_id})
+                except httpx.HTTPError:
+                    pass
+                raise ImageGenerationError(
+                    f"The image took longer than {timeout_seconds():.0f} s and was cancelled."
+                ) from None
+        finally:
+            await ws_cm.__aexit__(None, None, None)
+            if prompt_id is not None:
+                # The prompt text would otherwise stay in ComfyUI's memory
+                # until it restarts.
+                try:
+                    await client.post("/history", json={"delete": [prompt_id]})
+                except httpx.HTTPError:
+                    pass
     finally:
         if owns_client:
             await client.aclose()
 
 
-async def _wait_for(client: httpx.AsyncClient, prompt_id: str) -> dict:
-    deadline = time.monotonic() + timeout_seconds()
-    while True:
+async def receive_image(ws, prompt_id: str, output_node: str) -> bytes:
+    """Read the job's websocket messages until it is done; return its PNG.
+
+    Text frames are JSON progress messages. A binary frame is an image: 4 bytes
+    event type, 4 bytes image format, then the image. Only frames that arrive
+    while the output node runs are the result - samplers can also send
+    previews.
+    """
+    current_node = None
+    image = None
+    async for message in ws:
+        if isinstance(message, (bytes, bytearray)):
+            if current_node == output_node and len(message) > 8:
+                image = bytes(message[8:])
+            continue
         try:
-            resp = await client.get(f"/history/{prompt_id}")
-            resp.raise_for_status()
-            entry = resp.json().get(prompt_id)
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ImageGenerationError(f"Lost contact with the image server ({exc}).") from exc
-
-        if entry:
-            status = entry.get("status") or {}
-            if status.get("status_str") == "error":
-                raise ImageGenerationError(f"Generation failed: {_execution_error(status)}")
-            # Finished only when ComfyUI says so: outputs can show up while the
-            # job is still on the running list.
-            if status.get("completed") or status.get("status_str") == "success":
-                return entry.get("outputs") or {}
-
-        if time.monotonic() > deadline:
-            # Take it off the queue so it does not occupy the GPU after the
-            # user has been told it failed.
-            try:
-                await client.post("/queue", json={"delete": [prompt_id]})
-                await client.post("/interrupt", json={"prompt_id": prompt_id})
-            except httpx.HTTPError:
-                pass
-            raise ImageGenerationError(
-                f"The image took longer than {timeout_seconds():.0f} s and was cancelled."
-            )
-        await asyncio.sleep(POLL_INTERVAL)
-
-
-def _first_image(outputs: dict) -> dict:
-    for node_output in outputs.values():
-        for image in node_output.get("images") or []:
-            return {
-                "filename": image["filename"],
-                "subfolder": image.get("subfolder", ""),
-                "type": image.get("type", "temp"),
-            }
-    raise ImageGenerationError("The image server finished without producing an image.")
+            event = json.loads(message)
+        except ValueError:
+            continue
+        kind, data = event.get("type"), event.get("data") or {}
+        if data.get("prompt_id") not in (None, prompt_id):
+            continue
+        if kind == "executing":
+            current_node = data.get("node")
+            if current_node is None and data.get("prompt_id") == prompt_id:
+                break
+        elif kind == "execution_success" and data.get("prompt_id") == prompt_id:
+            break
+        elif kind == "execution_error":
+            reason = str(data.get("exception_message") or "unknown error").strip()
+            raise ImageGenerationError(f"Generation failed: {reason}")
+        elif kind == "execution_interrupted":
+            raise ImageGenerationError("Generation was interrupted on the image server.")
+    if image is None:
+        raise ImageGenerationError("The image server finished without producing an image.")
+    return image
 
 
 def _reason(resp: httpx.Response) -> str:
@@ -358,13 +400,6 @@ def _reason(resp: httpx.Response) -> str:
         for err in node.get("errors", [])
     ]
     return message + (f" ({'; '.join(d for d in details if d)})" if any(details) else "")
-
-
-def _execution_error(status: dict) -> str:
-    for kind, data in status.get("messages") or []:
-        if kind == "execution_error":
-            return str(data.get("exception_message", "unknown error")).strip()
-    return "unknown error"
 
 
 async def free_memory(client: httpx.AsyncClient | None = None) -> None:
@@ -394,12 +429,24 @@ RELEASE_TIMEOUT = 30.0
 def handback_free_bytes() -> int:
     """Free VRAM needed before the chat model is preloaded after images.
 
-    8.5 GB by default, as agreed with the AI-1 agent: qwen3:8b at 24576 needs
-    about 6.7 GB plus llama.cpp's 1 GiB fit margin, and the card shows about
-    11.7 GB free when idle. Measured on the whole card, not ComfyUI's share: a
-    preload seen live with 5.1 GB free got only 21 of 37 layers on the GPU.
+    9.5 GB by default. Ollama fits qwen3:8b at 24576 only with about 8.96 GB
+    free: 7065 MiB for the model, llama.cpp's 1 GiB fit margin and its 457 MiB
+    minimum. 8.5 GB was seen live to load it 61% on the GPU. The card shows
+    about 11.7 GB free when idle. Measured on the whole card, not ComfyUI's
+    share. service._return_gpu_to_chat also reloads once if it still misses.
     """
-    return int(float(os.getenv("IMAGE_HANDBACK_FREE_BYTES", str(8.5e9))))
+    return int(float(os.getenv("IMAGE_HANDBACK_FREE_BYTES", str(9.5e9))))
+
+
+def free_for_others(device: dict) -> int:
+    """GPU memory another process (Ollama) could use now.
+
+    ComfyUI's vram_free also counts memory PyTorch has reserved but is not
+    using (torch_vram_free), which no other process can have. Seen live: the
+    wait passed at "9.5 GB free" and Ollama still loaded the chat model 61%
+    on the GPU.
+    """
+    return int(device.get("vram_free", 0)) - int(device.get("torch_vram_free", 0))
 
 
 async def wait_until_released(client: httpx.AsyncClient | None = None,
@@ -423,7 +470,7 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
             resp = await client.get("/system_stats")
             resp.raise_for_status()
             devices = resp.json().get("devices") or []
-            if devices and devices[0].get("vram_free", 0) >= needed:
+            if devices and free_for_others(devices[0]) >= needed:
                 return True
             if time.monotonic() > deadline:
                 return False
