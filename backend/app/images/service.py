@@ -127,18 +127,28 @@ async def _return_gpu_to_chat() -> None:
         logger.info("not handing the GPU back to the chat model: %s", held.describe())
         return
     await comfyui.free_memory()
-    if not await comfyui.wait_until_released():
-        logger.warning("ComfyUI did not release GPU memory in time; the chat model may load partly on the CPU")
     tag = current_tag()
-    await ollama.warm(tag, int(os.getenv("OLLAMA_NUM_CTX", "8192")))
-    for model in await ollama.resident():
-        if model.tag == tag and not model.fully_on_gpu:
-            logger.warning(
-                "%s is only %d%% on the GPU (%d of %d MiB); replies will be slow. "
-                "Lower OLLAMA_NUM_CTX or free GPU memory on the Ollama host.",
-                tag, 100 * model.vram_bytes // max(model.size_bytes, 1),
-                model.vram_bytes // 2**20, model.size_bytes // 2**20,
-            )
+    num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+    # Twice at most: a model loaded while memory was still short stays partly
+    # on the CPU until it is unloaded, so check and reload once.
+    for attempt in (1, 2):
+        if not await comfyui.wait_until_released():
+            logger.warning("ComfyUI did not release GPU memory in time; the chat model "
+                           "may load partly on the CPU")
+        await ollama.warm(tag, num_ctx)
+        model = next((m for m in await ollama.resident() if m.tag == tag), None)
+        if model is None or model.fully_on_gpu:
+            return
+        share = 100 * model.vram_bytes // max(model.size_bytes, 1)
+        if attempt == 1:
+            logger.info("%s loaded only %d%% on the GPU; reloading it once", tag, share)
+            await ollama.unload(tag)
+            continue
+        logger.warning(
+            "%s is only %d%% on the GPU (%d of %d MiB); replies will be slow. "
+            "Lower OLLAMA_NUM_CTX or free GPU memory on the Ollama host.",
+            tag, share, model.vram_bytes // 2**20, model.size_bytes // 2**20,
+        )
 
 
 def _check_png(png: bytes) -> None:

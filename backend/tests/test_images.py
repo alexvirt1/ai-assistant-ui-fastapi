@@ -4,6 +4,7 @@ ComfyUI is replaced by an httpx.MockTransport, Ollama and Postgres by
 monkeypatched functions, so none of this needs AI-1.
 """
 
+import asyncio
 import json
 from io import BytesIO
 
@@ -31,22 +32,65 @@ def comfy_env(monkeypatch):
     monkeypatch.setenv("COMFYUI_BASE_URL", "http://comfy.test")
     monkeypatch.delenv("IMAGE_MODEL", raising=False)
     monkeypatch.setattr(comfyui, "POLL_INTERVAL", 0)
+    monkeypatch.setattr(comfyui, "open_ws", lambda url: _ACTIVE[0].open_ws(url))
     comfyui.reset_cache()
     yield
     comfyui.reset_cache()
 
 
+_ACTIVE: list = [None]
+PNG_FRAME_HEADER = b"\x00\x00\x00\x01\x00\x00\x00\x02"  # event type, image format
+
+
+class FakeWS:
+    """ComfyUI's websocket for one client: progress messages, then the image."""
+
+    def __init__(self, fake, url):
+        self.fake, self.url = fake, url
+
+    async def __aenter__(self):
+        self.fake.events.append("ws-open")
+        return self
+
+    async def __aexit__(self, *exc):
+        self.fake.events.append("ws-close")
+
+    def __aiter__(self):
+        return self.messages()
+
+    async def messages(self):
+        fake = self.fake
+        def text(kind, **data):
+            return json.dumps({"type": kind, "data": data})
+        # Noise first: another job's message, and a sampler preview frame.
+        yield text("executing", node="3", prompt_id="someone-elses")
+        yield text("executing", node="8", prompt_id="p1")
+        yield PNG_FRAME_HEADER + b"sampler preview, not the result"
+        if fake.never_done:
+            await asyncio.sleep(3600)
+        if fake.error:
+            yield text("execution_error", prompt_id="p1", exception_message=fake.error)
+            return
+        output = next(k for k, v in fake.submitted["prompt"].items()
+                      if v["class_type"] == comfyui.OUTPUT_NODE)
+        yield text("executing", node=output, prompt_id="p1")
+        if not fake.no_image:
+            yield PNG_FRAME_HEADER + png_bytes()
+        yield text("executing", node=None, prompt_id="p1")
+
+
 class FakeComfy:
-    """Enough of ComfyUI's HTTP API for one generation."""
+    """Enough of ComfyUI's HTTP and websocket API for one generation."""
 
     def __init__(self, *, busy=False, reject=None, error=None, never_done=False,
-                 files=None, nodes=None):
+                 files=None, nodes=None, no_image=False):
+        _ACTIVE[0] = self
         self.busy = busy
         self.own_running = False
-        self.outputs_before_completed = False
         self.reject = reject
         self.error = error
         self.never_done = never_done
+        self.no_image = no_image
         self.files = files or {
             "diffusion_models": ["z_image_turbo_int8_convrot.safetensors",
                                  "flux-2-klein-4b.safetensors"],
@@ -57,7 +101,13 @@ class FakeComfy:
         self.submitted = None
         self.freed = False
         self.cancelled = False
-        self.polls = 0
+        self.history_deleted = []
+        self.events = []
+        self.ws_urls = []
+
+    def open_ws(self, url):
+        self.ws_urls.append(url)
+        return FakeWS(self, url)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -71,7 +121,7 @@ class FakeComfy:
         if path == "/queue" and request.method == "GET":
             running = [[1, "other-job", {}, {"client_id": "someone-else"}, []]] if self.busy else []
             if self.own_running:
-                running.append([2, "p1", {}, {"client_id": comfyui.CLIENT_ID}, []])
+                running.append([2, "p0", {}, {"client_id": comfyui.CLIENT_ID + "-0123abcd"}, []])
             return httpx.Response(200, json={"queue_running": running, "queue_pending": []})
         if path == "/queue":
             self.cancelled = True
@@ -79,30 +129,15 @@ class FakeComfy:
         if path == "/interrupt":
             return httpx.Response(200, json={})
         if path == "/prompt":
+            self.events.append("prompt")
             if self.reject:
                 return httpx.Response(400, json={"error": {"message": self.reject},
                                                  "node_errors": {}})
             self.submitted = json.loads(request.content)
             return httpx.Response(200, json={"prompt_id": "p1", "number": 1})
-        if path == "/history/p1":
-            self.polls += 1
-            if self.never_done or self.polls < 2:
-                return httpx.Response(200, json={})
-            if self.error:
-                return httpx.Response(200, json={"p1": {"status": {
-                    "status_str": "error", "completed": False,
-                    "messages": [["execution_error", {"exception_message": self.error}]]},
-                    "outputs": {}}})
-            if self.outputs_before_completed and self.polls == 2:
-                return httpx.Response(200, json={"p1": {"status": {}, "outputs": {"10": {
-                    "images": [{"filename": "partial.png", "subfolder": "", "type": "temp"}]}}}})
-            return httpx.Response(200, json={"p1": {
-                "status": {"status_str": "success", "completed": True},
-                "outputs": {"10": {"images": [
-                    {"filename": "ComfyUI_temp_0001.png", "subfolder": "", "type": "temp"}]}}}})
-        if path == "/view":
-            assert request.url.params["type"] == "temp"
-            return httpx.Response(200, content=png_bytes())
+        if path == "/history" and request.method == "POST":
+            self.history_deleted += json.loads(request.content)["delete"]
+            return httpx.Response(200, json={})
         if path == "/free":
             self.freed = True
             return httpx.Response(200, json={})
@@ -193,13 +228,48 @@ async def test_available_models_empty_when_unreachable():
 
 # --- generation --------------------------------------------------------------
 
-async def test_generate_returns_png():
+@pytest.mark.parametrize("name", list(comfyui.MODELS))
+async def test_generate_returns_png_over_the_websocket(name):
     fake = FakeComfy()
     async with fake.client() as client:
-        png = await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
-    assert png.startswith(b"\x89PNG")
-    assert fake.submitted["client_id"] == comfyui.CLIENT_ID
-    assert fake.polls >= 2
+        png = await comfyui.generate(comfyui.MODELS[name], request(), client)
+    # The image itself, not the sampler preview sent earlier.
+    assert png == png_bytes()
+    client_id = fake.submitted["client_id"]
+    assert client_id.startswith(comfyui.CLIENT_ID + "-")
+    assert fake.ws_urls == [f"ws://comfy.test/ws?clientId={client_id}"]
+    # Websocket open before queueing, so a fast job cannot finish unseen.
+    assert fake.events[:2] == ["ws-open", "prompt"] and "ws-close" in fake.events
+    # The prompt does not stay in ComfyUI's history.
+    assert fake.history_deleted == ["p1"]
+
+
+async def test_generate_writes_no_file_on_ai1():
+    for model in comfyui.MODELS.values():
+        classes = {n["class_type"] for n in model.build(request()).values()}
+        assert comfyui.OUTPUT_NODE in classes
+        assert not classes & {"SaveImage", "PreviewImage"}
+
+
+async def test_generate_without_image_is_an_error():
+    fake = FakeComfy(no_image=True)
+    async with fake.client() as client:
+        with pytest.raises(ImageGenerationError, match="without producing an image"):
+            await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert fake.history_deleted == ["p1"]
+
+
+async def test_generate_unreachable_websocket(monkeypatch):
+    fake = FakeComfy()
+
+    def refuse(url):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(comfyui, "open_ws", refuse)
+    async with fake.client() as client:
+        with pytest.raises(ImageGenerationError, match="unreachable"):
+            await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert fake.submitted is None
 
 
 async def test_generate_refuses_when_ai1_busy():
@@ -215,6 +285,7 @@ async def test_generate_reports_rejection():
     async with fake.client() as client:
         with pytest.raises(ImageGenerationError, match="failed validation"):
             await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert "ws-close" in fake.events and fake.history_deleted == []
 
 
 async def test_generate_reports_execution_error():
@@ -222,15 +293,16 @@ async def test_generate_reports_execution_error():
     async with fake.client() as client:
         with pytest.raises(ImageGenerationError, match="out of memory"):
             await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
+    assert fake.history_deleted == ["p1"]
 
 
 async def test_generate_times_out_and_cancels(monkeypatch):
-    monkeypatch.setenv("IMAGE_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("IMAGE_TIMEOUT_SECONDS", "0.05")
     fake = FakeComfy(never_done=True)
     async with fake.client() as client:
         with pytest.raises(ImageGenerationError, match="cancelled"):
             await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
-    assert fake.cancelled
+    assert fake.cancelled and fake.history_deleted == ["p1"]
 
 
 async def test_free_memory_skips_when_others_queued():
@@ -272,9 +344,10 @@ def fake_service(monkeypatch):
         tag = "qwen3:8b"
         size_bytes = 100
 
-        @property
-        def vram_bytes(self):
-            return calls.get("vram", 100)
+        def __init__(self):
+            # A list gives one value per resident() call, in order.
+            vram = calls.get("vram", 100)
+            self.vram_bytes = vram.pop(0) if isinstance(vram, list) else vram
 
         @property
         def fully_on_gpu(self):
@@ -520,15 +593,7 @@ async def test_own_job_on_queue_is_not_busy():
         await comfyui.free_memory(client)
         assert fake.freed
         png = await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
-    assert png.startswith(b"\x89PNG")
-
-
-async def test_waits_for_completed_not_just_outputs():
-    fake = FakeComfy()
-    fake.outputs_before_completed = True
-    async with fake.client() as client:
-        await comfyui.generate(comfyui.MODELS["z-image-turbo"], request(), client)
-    assert fake.polls == 3
+    assert png == png_bytes()
 
 
 async def test_wait_until_released_asks_again(monkeypatch):
@@ -656,3 +721,44 @@ async def test_chat_turn_during_reservation_is_logged(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         await route.note_reservation_conflict("t1")
     assert "chat turn during a GPU reservation" in caplog.text
+
+
+async def test_handback_reloads_once_when_chat_model_misses_the_gpu(fake_service, caplog):
+    # resident() calls: the unload before the image, the first reload (61% on the
+    # GPU), the second reload (fully on the GPU).
+    fake_service["vram"] = [100, 61, 100]
+    with caplog.at_level("INFO"):
+        await service.generate_for_chat(prompt="x", thread_id="t", user_id="u")
+    assert fake_service["unloaded"] == ["qwen3:8b", "qwen3:8b"]   # before the image, then the retry
+    assert "reloading it once" in caplog.text and "replies will be slow" not in caplog.text
+
+
+def test_handback_threshold_covers_ollamas_need(monkeypatch):
+    monkeypatch.delenv("IMAGE_HANDBACK_FREE_BYTES", raising=False)
+    # 7065 MiB model + 1 GiB fit margin + 457 MiB minimum, as Ollama computes it.
+    assert comfyui.handback_free_bytes() > (7065 + 1024 + 457) * 2**20
+
+
+def test_free_for_others_excludes_torch_cache():
+    device = {"vram_free": int(10e9), "torch_vram_free": int(3e9)}
+    assert comfyui.free_for_others(device) == int(7e9)
+    assert comfyui.free_for_others({"vram_free": int(9e9)}) == int(9e9)
+
+
+async def test_wait_until_released_ignores_memory_torch_still_holds(monkeypatch):
+    monkeypatch.setenv("IMAGE_HANDBACK_FREE_BYTES", str(9.5e9))
+    states = iter([(11.0e9, 3.0e9), (11.0e9, 0.2e9)])   # (vram_free, torch_vram_free)
+    polls = []
+
+    def handler(request):
+        if request.url.path == "/free":
+            return httpx.Response(200, json={})
+        free, cached = next(states)
+        polls.append(1)
+        return httpx.Response(200, json={"devices": [{"vram_total": 12.5e9, "vram_free": free,
+                                                     "torch_vram_free": cached}]})
+
+    client = httpx.AsyncClient(base_url="http://comfy.test", transport=httpx.MockTransport(handler))
+    async with client:
+        assert await comfyui.wait_until_released(client, timeout=5)
+    assert len(polls) == 2   # 11 GB "free" with 3 GB still in torch's cache was not enough

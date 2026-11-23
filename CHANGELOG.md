@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**Generated images leave nothing behind on the GPU host.** Images used to come back through
+ComfyUI's temp folder. That folder is emptied only when ComfyUI restarts, and any host on the LAN
+can read it until then, so the earlier claim that "ComfyUI keeps no lasting copy" (1.8.0) was not
+true. A copy of every generated image stayed on AI-1, even after it was deleted in the chat. Now:
+
+- **No file:** the workflows end in `SaveImageWebsocket`, which sends the PNG over ComfyUI's
+  websocket and writes nothing to disk.
+- **No prompt in memory:** each job is removed from ComfyUI's history once done.
+- **AI-1's own clean-up:** since 2026-11-23, AI-1 also deletes temp files older than an hour, which
+  covered the copies left by earlier versions.
+
+**Fixed: the chat model could still reload partly on the CPU after images.** The hand-back counted
+memory PyTorch had cached but not released as free. It now waits for memory free to other
+processes, with a threshold of 9.5 GB that covers Ollama's real need. If the model still misses
+the GPU, it is reloaded once.
+
+**Upgrading.** `websockets` is now a declared backend dependency (the same version was already
+installed through `uvicorn`); run `poetry install`. Restart the backend.
+
 ## [1.9.3] - 2026-11-23
 
 **The chat fits phone screens.** On a phone the chat list used to take half the width, so answers
