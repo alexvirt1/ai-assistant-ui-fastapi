@@ -17,6 +17,7 @@ const image = {
   height: 1024,
   seed: 42,
   prompt: "A lighthouse at dusk",
+  references: [] as { id: string; name: string }[],
 };
 
 beforeEach(() => {
@@ -30,6 +31,17 @@ afterEach(() => {
 });
 
 describe("ImageCard", () => {
+  it("shows the reference photos it was made from", () => {
+    render(<ImageCard image={{ ...image, references: [{ id: "r1", name: "dog.jpg" }] }} />);
+    expect(screen.getByText("References:")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "dog.jpg" }).getAttribute("src")).toBe("/api/references/r1");
+  });
+
+  it("shows no references row without references", () => {
+    render(<ImageCard image={image} />);
+    expect(screen.queryByText("References:")).toBeNull();
+  });
+
   it("shows the image, its prompt and details", () => {
     render(<ImageCard image={image} />);
     const img = screen.getByRole("img", { name: "A lighthouse at dusk" });

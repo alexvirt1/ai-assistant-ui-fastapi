@@ -163,8 +163,11 @@ def make_chats_router(graph, checkpointer=None) -> APIRouter:
         # a streaming answer in another tab would stall while it ran.
         stored = await image_store.get_thread_images(thread_id, user_id)
         images = {key: (image.png, image.prompt) for key, image in stored.items()}
+        refs = await reference_store.list_for_thread(thread_id, user_id, include_deleted=True)
+        references = {str(r.id): (None if r.deleted else r.png, r.name) for r in refs}
         pdf = await run_in_threadpool(
-            render_chat_pdf, title, to_core_messages(messages), None, diagrams, images
+            render_chat_pdf, title, to_core_messages(messages), None, diagrams, images,
+            references,
         )
         return Response(
             content=pdf,

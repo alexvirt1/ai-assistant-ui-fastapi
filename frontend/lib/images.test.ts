@@ -17,8 +17,19 @@ describe("parseImageResult", () => {
     );
     expect(parsed).toEqual({
       kind: "image",
-      image: { imageId: "abc", model: "z-image-turbo", width: 832, height: 1216, seed: 5, prompt: "a fox" },
+      image: { imageId: "abc", model: "z-image-turbo", width: 832, height: 1216, seed: 5, prompt: "a fox", references: [] },
     });
+  });
+
+  it("reads the reference photos an image was made from", () => {
+    const parsed = parseImageResult(
+      JSON.stringify({
+        image_id: "abc",
+        prompt: "dog astronaut",
+        references: [{ id: "r1", name: "dog.jpg" }, { name: "no id" }, "junk"],
+      }),
+    );
+    expect(parsed.kind === "image" && parsed.image.references).toEqual([{ id: "r1", name: "dog.jpg" }]);
   });
 
   it("turns an error string into a message", () => {

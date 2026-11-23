@@ -170,8 +170,10 @@ def render_reference_block(references: list) -> str:
     return (
         "Reference photos attached to this conversation:\n" + "\n".join(lines)
         + "\n\nWhen the user wants an image that looks like one of them, call "
-        "generate_image with its id in reference_ids. You cannot see these photos; "
-        "never describe what is in them unless the user told you."
+        "generate_image with its id in reference_ids. A message that attaches a photo "
+        "contains <reference-image id=\"...\" name=\"...\" />; unless the user says "
+        "otherwise, use the photos of their latest message that has any. You cannot "
+        "see these photos; never describe what is in them unless the user told you."
     )
 
 
