@@ -294,3 +294,4 @@ def test_replay_shows_cloud_badge_and_escalation(cloud_config):
     badge = out[3]["content"][-1]
     assert badge["toolName"] == "cloud_answer"
     assert json.loads(badge["result"])["model"] == "Claude Sonnet 5.5"
+
