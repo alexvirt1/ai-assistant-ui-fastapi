@@ -1,6 +1,6 @@
 # Reference images for image generation: implementation plan
 
-Status: **phases 1–3 built on this branch, not deployed** (2026-11-23). Target release: 1.10.0.
+Status: **phases 1–3 released in 1.10.0, phase 4 (captions) in 1.11.0** (2026-11-23).
 
 **Live test on AI-1** (synthetic shapes, 1024², 8 steps, outside reservations):
 
@@ -35,6 +35,23 @@ is uploaded when the message is sent, and the model gets a marker
 as a thumbnail in the user's message; click to enlarge or delete it. The image card lists the
 references it used, and the PDF prints them as thumbnails (a deleted one by name). Checked in a
 browser against a fake backend, desktop and phone.
+
+**Phase 4 (captions, 1.11.0):** with two people's photos, only one came out and the other was
+generic. Klein follows the text, and the chat model, which can't see the photos, wrote "two
+pirates" or "his friend". Tested on AI-1 with the same two photos and seed:
+
+| Prompt | Result |
+|---|---|
+| generic ("two pirates in a pub") | neither clearly |
+| generic + "the subject from image 1 and the subject from image 2" | one, the other generic |
+| names by image number ("Davy Jones from image 2") | one, the other generic |
+| visual description by image number | both |
+| generic + qwen3-vl captions ("Image 2 shows: a creature with … tentacle-like appendages") | both |
+
+So each photo is captioned once by `qwen3-vl:8b` during its first image job and the caption is
+appended to the prompt. qwen3-vl reasons even with `think: false` and spent all 100 tokens on
+it; a prefilled empty `<think></think>` fixes that (6 s load, 3 s per photo). Announced to the
+AI-1 agent, which keeps qwen3-vl:8b on its keep-list.
 Branch: `reference-images`, merged into `dev`, then `dev` into `main`.
 
 ## Goal
@@ -222,5 +239,5 @@ sequenceDiagram
 | 1 | Check temp uploads on AI-1 with one tiny image; storage, normalisation and endpoints | References can be attached and stored |
 | 2 | Reference workflow, `generate_image(reference_ids)`, prompt block, Claude view | Images generated with references |
 | 3 | Frontend: image attachments, thumbnails, card, PDF thumbnails | Usable end to end |
-| 4 | Optional: describe references with `qwen3-vl:8b` to improve prompts | Better likeness from text (later) |
+| 4 | Describe references with `qwen3-vl:8b` to improve prompts (done in 1.11.0) | Every referenced subject comes out |
 | 5 | Docs, CHANGELOG, runbook note, release 1.10.0, tell the AI-1 agent | Release |

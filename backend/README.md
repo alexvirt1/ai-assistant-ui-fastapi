@@ -176,6 +176,17 @@ generated image look like them; the code is in `app/references/`.
   and fed through a `ReferenceLatent` chain. At most 4 photos and 2 MP in total
   (1 MP each for 1–2 photos, 0.5 MP each for 3–4); 1–2 work best. AI-1 deletes
   temp files after an hour.
+- **Captions (1.11.0):** Klein follows the text: a referenced subject the prompt
+  does not describe comes out generic, and the chat model can't see photos. So
+  the first image that uses a photo has `REFERENCE_CAPTION_MODEL`
+  (`qwen3-vl:8b` on the Ollama host) describe it in one sentence, stored in
+  `chat_references.caption`. The image prompt gets "Image 1 shows: …" per
+  photo, and later turns list the caption for the chat model. It runs while the
+  chat model is unloaded anyway: ComfyUI is freed, the vision model answers
+  with `keep_alive` 0 and is unloaded, then Klein loads. About 6 s to load
+  plus 3 s per photo. An empty thinking block is prefilled, since qwen3-vl
+  otherwise reasons until its token limit and answers nothing. If captioning
+  fails, the photo is used without one.
 - **Claude (hybrid mode):** sees the photos (at most 1024 px) only when the
   chat's Docs box is ticked; generation always stays on AI-1.
 

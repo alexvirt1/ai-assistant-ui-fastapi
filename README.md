@@ -32,7 +32,8 @@ In the chat:
   GPU host and shown as a card, with full-size view, Download and permanent
   Delete; kept in the chat's history (see [backend/README.md](backend/README.md#images))
 - **Reference photos**: attach PNG, JPEG, GIF or WebP photos with the paperclip and the
-  image is made to look like them (FLUX.2 Klein, up to 4 photos); GPS and other metadata
+  image is made to look like them (FLUX.2 Klein, up to 4 photos; each photo described once by
+  `qwen3-vl:8b`, so every person in it comes out); GPS and other metadata
   are removed on upload (see [backend/README.md](backend/README.md#reference-photos))
 
 ## Tool Architecture
@@ -87,6 +88,7 @@ Key properties:
 | `COMFYUI_BASE_URL` | Enables `generate_image` / `list_image_models` (ComfyUI on the GPU host, e.g. `http://192.168.87.160:8188`). |
 | `IMAGE_MODEL` | Default image model: `z-image-turbo` (default) or `flux2-klein`. |
 | `IMAGE_TIMEOUT_SECONDS` | Give up on, and cancel, an image after this long (default 180). |
+| `REFERENCE_CAPTION_MODEL` | Vision model on the Ollama host that describes reference photos for the image prompt (default `qwen3-vl:8b`; empty turns it off). |
 
 ## Prerequisites
 
