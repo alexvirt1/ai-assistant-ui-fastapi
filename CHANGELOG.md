@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-11-23
+
 **Generated images leave nothing behind on the GPU host.** Images used to come back through
 ComfyUI's temp folder. That folder is emptied only when ComfyUI restarts, and any host on the LAN
 can read it until then, so the earlier claim that "ComfyUI keeps no lasting copy" (1.8.0) was not
