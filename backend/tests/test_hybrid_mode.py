@@ -295,3 +295,67 @@ def test_replay_shows_cloud_badge_and_escalation(cloud_config):
     assert badge["toolName"] == "cloud_answer"
     assert json.loads(badge["result"])["model"] == "Claude Sonnet 5.5"
 
+
+
+# --- cloud failures fall back to the local model -----------------------------
+
+import anthropic  # noqa: E402
+
+
+def api_error(cls, status):
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls("boom", response=httpx.Response(status, request=request), body=None)
+
+
+class FailingCloudGraph:
+    """Fails like Claude on the first run; answers locally when resumed."""
+
+    def __init__(self, error):
+        self.error, self.calls = error, []
+
+    async def astream(self, graph_input, config, stream_mode):
+        self.calls.append((graph_input, dict(config["configurable"])))
+        if graph_input is not None:
+            raise self.error
+            yield  # pragma: no cover - makes this an async generator
+        yield AIMessage("local answer"), {}
+
+
+def body(mode="cloud"):
+    return {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "threadId": "t1", "tools": [], "mode": mode}
+
+
+def reply_text(text):
+    return "".join(json.loads(ln[2:]) for ln in text.splitlines() if ln.startswith("0:"))
+
+
+@pytest.mark.parametrize("cls, status, says", [
+    (anthropic.AuthenticationError, 401, "Claude rejected the API key"),
+    (anthropic.RateLimitError, 429, "rate limit"),
+    (anthropic.InternalServerError, 500, "overloaded or unavailable"),
+])
+async def test_cloud_failure_answers_locally(routing, monkeypatch, cls, status, says):
+    graph = FailingCloudGraph(api_error(cls, status))
+    coro, recorded = run_route(graph, body(), monkeypatch)
+    text = reply_text(await coro)
+    assert says in text and text.endswith("Answered by the local model instead._\n\nlocal answer")
+    first, second = graph.calls
+    assert first[1]["answer_with"] == "cloud"
+    assert second == (None, {**first[1], "answer_with": "local"})   # resumed, now local
+    assert not recorded                                              # nothing billed
+
+
+async def test_bad_request_is_not_hidden(routing, monkeypatch):
+    graph = FailingCloudGraph(api_error(anthropic.BadRequestError, 400))
+    coro, _ = run_route(graph, body(), monkeypatch)
+    text = reply_text(await coro)
+    assert "Something went wrong while answering" in text and "local answer" not in text
+    assert len(graph.calls) == 1
+
+
+async def test_local_turn_errors_are_unchanged(routing, monkeypatch):
+    graph = FailingCloudGraph(api_error(anthropic.AuthenticationError, 401))
+    coro, _ = run_route(graph, body("local"), monkeypatch)
+    text = reply_text(await coro)
+    assert "Something went wrong while answering" in text and len(graph.calls) == 1

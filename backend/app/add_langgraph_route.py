@@ -4,6 +4,7 @@ import logging
 from uuid import uuid4
 from typing import Any, List, Literal, Optional, Union
 
+import anthropic
 from assistant_stream import RunController, create_run
 from assistant_stream.serialization import DataStreamResponse
 from fastapi import Depends, FastAPI, HTTPException
@@ -246,6 +247,33 @@ async def record_cloud_turn(controller, route: dict, thread_id: str, user_id: st
                                  "output_tokens": tokens["output"], "cost_usd": round(cost, 4)}))
 
 
+def is_cloud_failure(exc: BaseException) -> bool:
+    """A failure on the cloud provider's side, worth answering locally instead.
+
+    Not a malformed request (400): that would be a bug here, and hiding it
+    behind a local answer would keep it from being seen.
+    """
+    return isinstance(exc, anthropic.APIError) and not isinstance(exc, anthropic.BadRequestError)
+
+
+def cloud_failure_note(exc: BaseException) -> str:
+    """What the user is told before the local model answers instead."""
+    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        why = ("Claude rejected the API key. Check ANTHROPIC_API_KEY in backend/.env "
+               "(a Console key starting sk-ant-api03-).")
+    elif isinstance(exc, anthropic.NotFoundError):
+        why = "This API key has no access to the configured Claude model."
+    elif isinstance(exc, anthropic.RateLimitError):
+        why = "Claude's rate limit for this API key was reached."
+    elif isinstance(exc, (anthropic.OverloadedError, anthropic.InternalServerError)):
+        why = "Claude is overloaded or unavailable right now."
+    elif isinstance(exc, anthropic.APIConnectionError):
+        why = "Claude could not be reached."
+    else:
+        why = "Claude could not answer."
+    return f"_{why} Answered by the local model instead._\n\n"
+
+
 async def note_reservation_conflict(thread_id: str) -> None:
     """Log a chat turn that starts while AI-1 holds a GPU reservation.
 
@@ -388,19 +416,21 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
 
             document_block = render_document_block(documents)
 
-            try:
+            configurable = {
+                "thread_id": thread_id,
+                # For tools that store per-user data (images).
+                "user_id": user_id,
+                "system": request.system,
+                "frontend_tools": request.tools,
+                **route,
+            }
+
+            async def consume(graph_input, configurable: dict) -> None:
+                """Stream one graph run into the controller."""
+                nonlocal emitted_text
                 async for msg, metadata in graph.astream(
-                    {"messages": inputs, "documents": document_block},
-                    {
-                        "configurable": {
-                            "thread_id": thread_id,
-                            # For tools that store per-user data (images).
-                            "user_id": user_id,
-                            "system": request.system,
-                            "frontend_tools": request.tools,
-                            **route,
-                        }
-                    },
+                    graph_input,
+                    {"configurable": configurable},
                     stream_mode="messages",
                 ):
                     if isinstance(msg, ToolMessage):
@@ -447,6 +477,21 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
 
                             if args:
                                 tool_calls[call_id].append_args_text(str(args))
+
+            try:
+                try:
+                    await consume({"messages": inputs, "documents": document_block}, configurable)
+                except Exception as exc:
+                    if not (to_cloud and is_cloud_failure(exc)):
+                        raise
+                    # Claude failed on its side (bad key, limits, outage): say
+                    # so plainly and let the local model answer the same turn.
+                    # Re-running with no input resumes from the checkpoint, so
+                    # the step that failed runs again, now locally.
+                    logger.warning("cloud turn failed, answering locally: %s", exc)
+                    controller.append_text(cloud_failure_note(exc))
+                    emitted_text = ""
+                    await consume(None, {**configurable, "answer_with": "local"})
             except Exception as exc:
                 # Without this the run dies mid-stream and the user gets an
                 # assistant message with no content at all - a blank bubble with
