@@ -1,6 +1,19 @@
 # Reference images for image generation: implementation plan
 
-Status: **plan, approved by the owner; not built yet** (2026-11-23). Target release: 1.10.0.
+Status: **phases 1 and 2 built on this branch, not deployed** (2026-11-23). Target release: 1.10.0.
+
+**Live test on AI-1** (synthetic shapes, 1024², 8 steps, outside reservations):
+
+| References | Time | Result |
+|---|---|---|
+| 1 at 1 MP | 35 s (incl. cold load) | follows shape and colour |
+| 2 at 1 MP | 41 s | both objects as in the references |
+| 4 at 0.5 MP | 42 s | colours kept, but every shape came out as a disc |
+
+So 1 or 2 references is the default the tool hint recommends; 3 or 4 are allowed, and the
+result is flagged as lower fidelity, as the AI-1 agent advised. The AI-1 agent has the API
+graphs for a fuller benchmark (warm times, peak VRAM, 4 × 1 MP), which it runs only with the
+owner's OK because it evicts the chat model.
 Branch: `reference-images`, merged into `dev`, then `dev` into `main`.
 
 ## Goal

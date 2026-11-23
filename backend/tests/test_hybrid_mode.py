@@ -359,3 +359,72 @@ async def test_local_turn_errors_are_unchanged(routing, monkeypatch):
     coro, _ = run_route(graph, body("local"), monkeypatch)
     text = reply_text(await coro)
     assert "Something went wrong while answering" in text and len(graph.calls) == 1
+
+
+# --- reference photos: prompt block and Claude's view -------------------------
+
+import uuid as _uuid  # noqa: E402
+from datetime import datetime as _dt, timezone as _tz  # noqa: E402
+from io import BytesIO as _BytesIO  # noqa: E402
+
+from PIL import Image as _Image  # noqa: E402
+
+from app.references.store import StoredReference  # noqa: E402
+
+
+def a_reference(name="dog.jpg"):
+    buf = _BytesIO()
+    _Image.new("RGB", (1600, 1200), (120, 80, 40)).save(buf, "PNG")
+    return StoredReference(id=_uuid.uuid4(), thread_id="t1", name=name, width=1600, height=1200,
+                           png=buf.getvalue(), created_at=_dt.now(_tz.utc), deleted_at=None)
+
+
+def test_reference_block_lists_ids_and_names_only():
+    ref = a_reference()
+    block = agent.render_reference_block([ref])
+    assert f"id={ref.id}" in block and 'name="dog.jpg"' in block and "reference_ids" in block
+    assert agent.render_reference_block([]) == ""
+
+
+def test_claude_sees_reference_images_only_when_given():
+    messages = [HumanMessage("draw this dog as an astronaut")]
+    block = agent.render_reference_block([a_reference()])
+    names_only = agent.cloud_prompt("BASE", messages, None, {"cloud_label": "Claude"}, block)
+    assert "dog.jpg" in names_only[0].content and isinstance(names_only[-1].content, str)
+
+    route = {"cloud_label": "Claude", "allow_documents": True,
+             "reference_images": [{"name": "dog.jpg", "data": "aGVsbG8="}]}
+    with_images = agent.cloud_prompt("BASE", messages, None, route, block)
+    last = with_images[-1].content
+    assert last[0] == {"type": "text", "text": "draw this dog as an astronaut"}
+    assert last[1]["type"] == "image" and last[1]["source"]["data"] == "aGVsbG8="
+
+
+class CaptureGraph:
+    async def astream(self, graph_input, config, stream_mode):
+        self.input, self.config = graph_input, dict(config["configurable"])
+        yield AIMessage("ok"), {}
+
+
+@pytest.mark.parametrize("mode, docs, expect_images", [
+    ("cloud", True, True), ("cloud", False, False), ("local", True, False),
+])
+async def test_route_passes_reference_photos(routing, monkeypatch, mode, docs, expect_images):
+    ref = a_reference()
+
+    async def load(thread_id, user_id):
+        return [ref]
+
+    monkeypatch.setattr(route_mod, "load_thread_references", load)
+    graph = CaptureGraph()
+    payload = {**body(mode), "allowCloudDocuments": docs}
+    coro, _ = run_route(graph, payload, monkeypatch)
+    await coro
+    assert str(ref.id) in graph.input["references"]
+    images = graph.config.get("reference_images")
+    if expect_images:
+        assert images and images[0]["name"] == "dog.jpg"
+        shown = _Image.open(_BytesIO(__import__("base64").b64decode(images[0]["data"])))
+        assert max(shown.size) == route_mod.CLOUD_IMAGE_SIDE   # scaled down for Claude
+    else:
+        assert not images
