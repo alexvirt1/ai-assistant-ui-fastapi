@@ -91,3 +91,8 @@ def test_summary_and_report():
 def test_long_prompt_size_is_about_right():
     words = len(run.long_prompt(6000)[0]["content"].split())
     assert 3500 < words < 6000     # ~0.75 words per token
+
+
+def test_each_run_reads_a_different_prompt():
+    first, second = (run.long_prompt(2000, run=i)[0]["content"] for i in (1, 2))
+    assert first[:10] != second[:10]     # differs from the start: no cached prefix

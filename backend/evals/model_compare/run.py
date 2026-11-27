@@ -160,6 +160,21 @@ class OpenAICompatible:
                      stopped_at_limit=finish == "length")
 
 
+def check_placement(backend, client) -> None:
+    """Stop if an Ollama model is partly on the CPU: its numbers would be meaningless.
+
+    Seen on the first baseline run: ComfyUI still held a model, qwen3:8b loaded
+    3.3 of its 6.0 GB on the GPU, and every reply was several times slower.
+    """
+    if not isinstance(backend, Ollama):
+        return
+    models = client.get(f"{backend.base}/api/ps").json().get("models") or []
+    for model in models:
+        if model["name"] == backend.tag and model.get("size_vram", 0) < model.get("size", 0):
+            raise SystemExit(f"{backend.tag} is only {model['size_vram'] / 1e9:.1f} of "
+                             f"{model['size'] / 1e9:.1f} GB on the GPU; free the GPU and rerun.")
+
+
 def backend_from(spec: str, num_ctx: int):
     kind, _, rest = spec.partition(":")
     if kind == "ollama":
@@ -178,10 +193,11 @@ FILLER = ("The harbour log for the week records the tides, the weather and every
           "came in, with its cargo, crew and the berth it was given. ")
 
 
-def long_prompt(approx_tokens: int) -> list[dict]:
-    # About 30 tokens per filler sentence; a numbered line keeps the text from
-    # being one repeated string the server could cache.
-    lines = [f"{i}. {FILLER}" for i in range(max(1, approx_tokens // 32))]
+def long_prompt(approx_tokens: int, run: int = 0) -> list[dict]:
+    # About 30 tokens per filler sentence. The run number leads every line, so
+    # no run can reuse another's cached prompt: the first baseline measured
+    # 112,000 tok/s reading because runs 2 and 3 came from Ollama's cache.
+    lines = [f"[{run}] {i}. {FILLER}" for i in range(max(1, approx_tokens // 32))]
     return [{"role": "user", "content": "\n".join(lines)
              + "\n\nIn one sentence: what does this log record?"}]
 
@@ -194,6 +210,7 @@ WRITE_PROMPT = [{"role": "user", "content":
 def run_speed(backend, client, repeat: int, sizes: list[int]) -> list[dict]:
     rows = []
     backend.chat(client, [{"role": "user", "content": "Say OK."}], max_tokens=4)   # load it
+    check_placement(backend, client)
     for i in range(repeat):
         reply = backend.chat(client, WRITE_PROMPT, max_tokens=450)
         rows.append({"part": "speed", "test": "write", "run": i,
@@ -201,7 +218,7 @@ def run_speed(backend, client, repeat: int, sizes: list[int]) -> list[dict]:
                      "output_tokens": reply.output_tokens, "seconds": reply.seconds})
     for size in sizes:
         for i in range(repeat):
-            reply = backend.chat(client, long_prompt(size), max_tokens=60)
+            reply = backend.chat(client, long_prompt(size, run=i + 1), max_tokens=60)
             rows.append({"part": "speed", "test": f"read-{size}", "run": i,
                          "prompt_tokens": reply.prompt_tokens, "read_tok_s": reply.read_rate,
                          "seconds": reply.seconds})

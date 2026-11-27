@@ -1,0 +1,82 @@
+{"part": "speed", "test": "write", "run": 0, "write_tok_s": 57.19685097017299, "first_token_s": null, "output_tokens": 450, "seconds": 7.938465268991422}
+{"part": "speed", "test": "write", "run": 1, "write_tok_s": 57.1501505906468, "first_token_s": null, "output_tokens": 390, "seconds": 6.873994323948864}
+{"part": "speed", "test": "write", "run": 2, "write_tok_s": 57.03918372540459, "first_token_s": null, "output_tokens": 390, "seconds": 6.887434940959793}
+{"part": "speed", "test": "read-2000", "run": 0, "prompt_tokens": 2496, "read_tok_s": 1986.8814876138317, "seconds": 1.884057870018296}
+{"part": "speed", "test": "read-2000", "run": 1, "prompt_tokens": 2496, "read_tok_s": 1992.7220935078456, "seconds": 2.1211132559692487}
+{"part": "speed", "test": "read-2000", "run": 2, "prompt_tokens": 2496, "read_tok_s": 1992.7730043128845, "seconds": 2.100443698000163}
+{"part": "speed", "test": "read-6000", "run": 0, "prompt_tokens": 7583, "read_tok_s": 2651.8316102664317, "seconds": 3.963000613031909}
+{"part": "speed", "test": "read-6000", "run": 1, "prompt_tokens": 7583, "read_tok_s": 2652.410412503511, "seconds": 4.3930525370524265}
+{"part": "speed", "test": "read-6000", "run": 2, "prompt_tokens": 7583, "read_tok_s": 2650.58766985625, "seconds": 4.4213441769825295}
+{"part": "answers", "id": "arith-easy-0", "category": "arithmetic", "difficulty": "easy", "answer": "2686", "expected": "2686", "correct": true, "seconds": 1.0969692769576795, "ran_away": false}
+{"part": "answers", "id": "arith-easy-1", "category": "arithmetic", "difficulty": "easy", "answer": "2632", "expected": "2632", "correct": true, "seconds": 0.4156005010008812, "ran_away": false}
+{"part": "answers", "id": "arith-easy-2", "category": "arithmetic", "difficulty": "easy", "answer": "1958", "expected": "1958", "correct": true, "seconds": 0.42095887201139703, "ran_away": false}
+{"part": "answers", "id": "arith-easy-3", "category": "arithmetic", "difficulty": "easy", "answer": "1155", "expected": "1155", "correct": true, "seconds": 0.41876467398833483, "ran_away": false}
+{"part": "answers", "id": "arith-easy-4", "category": "arithmetic", "difficulty": "easy", "answer": "420", "expected": "420", "correct": true, "seconds": 0.39170163101516664, "ran_away": false}
+{"part": "answers", "id": "arith-easy-5", "category": "arithmetic", "difficulty": "easy", "answer": "1856", "expected": "1856", "correct": true, "seconds": 0.4272840429912321, "ran_away": false}
+{"part": "answers", "id": "arith-hard-0", "category": "arithmetic", "difficulty": "hard", "answer": "130664166345", "expected": "130431346185", "correct": false, "seconds": 0.8596142540336587, "ran_away": false}
+{"part": "answers", "id": "arith-hard-1", "category": "arithmetic", "difficulty": "hard", "answer": "196984218246", "expected": "197092522263", "correct": false, "seconds": 0.3476360880304128, "ran_away": false}
+{"part": "answers", "id": "arith-hard-2", "category": "arithmetic", "difficulty": "hard", "answer": "246644174262", "expected": "247034919942", "correct": false, "seconds": 0.8420384150231257, "ran_away": false}
+{"part": "answers", "id": "arith-hard-3", "category": "arithmetic", "difficulty": "hard", "answer": "215744444445", "expected": "215727095805", "correct": false, "seconds": 0.35344701301073655, "ran_away": false}
+{"part": "answers", "id": "arith-hard-4", "category": "arithmetic", "difficulty": "hard", "answer": "1613721122288", "expected": "161607302928", "correct": false, "seconds": 0.3637699640239589, "ran_away": false}
+{"part": "answers", "id": "arith-hard-5", "category": "arithmetic", "difficulty": "hard", "answer": "188344142202", "expected": "188640364942", "correct": false, "seconds": 0.8449370410526171, "ran_away": false}
+{"part": "answers", "id": "word-easy-0", "category": "word_problem", "difficulty": "easy", "answer": "12", "expected": "12", "correct": true, "seconds": 1.2149036889895797, "ran_away": false}
+{"part": "answers", "id": "word-easy-1", "category": "word_problem", "difficulty": "easy", "answer": "215", "expected": "215", "correct": true, "seconds": 1.5741968210204504, "ran_away": false}
+{"part": "answers", "id": "word-easy-2", "category": "word_problem", "difficulty": "easy", "answer": "43", "expected": "43", "correct": true, "seconds": 1.0790453390218318, "ran_away": false}
+{"part": "answers", "id": "word-hard-3", "category": "word_problem", "difficulty": "hard", "answer": "113", "expected": "113", "correct": true, "seconds": 1.1654464849852957, "ran_away": false}
+{"part": "answers", "id": "word-hard-4", "category": "word_problem", "difficulty": "hard", "answer": "180", "expected": "180", "correct": true, "seconds": 4.003368161036633, "ran_away": false}
+{"part": "answers", "id": "word-hard-5", "category": "word_problem", "difficulty": "hard", "answer": "401", "expected": "401", "correct": true, "seconds": 7.229480764013715, "ran_away": false}
+{"part": "answers", "id": "code-easy-0", "category": "code_trace", "difficulty": "easy", "answer": "4", "expected": "4", "correct": true, "seconds": 0.32853164797415957, "ran_away": false}
+{"part": "answers", "id": "code-easy-1", "category": "code_trace", "difficulty": "easy", "answer": "HELLO", "expected": "ELL", "correct": false, "seconds": 0.2857151990174316, "ran_away": false}
+{"part": "answers", "id": "code-easy-2", "category": "code_trace", "difficulty": "easy", "answer": "55", "expected": "55", "correct": true, "seconds": 0.5597802469856106, "ran_away": false}
+{"part": "answers", "id": "code-easy-3", "category": "code_trace", "difficulty": "easy", "answer": "12", "expected": "12", "correct": true, "seconds": 1.0621000280370936, "ran_away": false}
+{"part": "answers", "id": "code-easy-4", "category": "code_trace", "difficulty": "easy", "answer": "4", "expected": "4", "correct": true, "seconds": 0.7532236200058833, "ran_away": false}
+{"part": "answers", "id": "code-hard-5", "category": "code_trace", "difficulty": "hard", "answer": "6", "expected": "6", "correct": true, "seconds": 1.0798738099983893, "ran_away": false}
+{"part": "answers", "id": "code-hard-6", "category": "code_trace", "difficulty": "hard", "answer": "1", "expected": "3", "correct": false, "seconds": 0.9036171750049107, "ran_away": false}
+{"part": "answers", "id": "code-hard-7", "category": "code_trace", "difficulty": "hard", "answer": "136", "expected": "76", "correct": false, "seconds": 0.9513088500243612, "ran_away": false}
+{"part": "answers", "id": "code-hard-8", "category": "code_trace", "difficulty": "hard", "answer": "15", "expected": "15", "correct": true, "seconds": 1.4543677019537427, "ran_away": false}
+{"part": "answers", "id": "code-hard-9", "category": "code_trace", "difficulty": "hard", "answer": "100", "expected": "100", "correct": true, "seconds": 0.6471196109778248, "ran_away": false}
+{"part": "answers", "id": "code-hard-10", "category": "code_trace", "difficulty": "hard", "answer": "3", "expected": "39", "correct": false, "seconds": 0.8209579690010287, "ran_away": false}
+{"part": "answers", "id": "letters-easy-0", "category": "letters", "difficulty": "easy", "answer": "2", "expected": "3", "correct": false, "seconds": 0.43292359000770375, "ran_away": false}
+{"part": "answers", "id": "letters-easy-1", "category": "letters", "difficulty": "easy", "answer": "2", "expected": "3", "correct": false, "seconds": 0.41303399798925966, "ran_away": false}
+{"part": "answers", "id": "letters-easy-2", "category": "letters", "difficulty": "easy", "answer": "2", "expected": "4", "correct": false, "seconds": 0.44964910799171776, "ran_away": false}
+{"part": "answers", "id": "letters-hard-0", "category": "letters", "difficulty": "hard", "answer": "3", "expected": "3", "correct": true, "seconds": 1.3895365920034237, "ran_away": false}
+{"part": "answers", "id": "letters-hard-1", "category": "letters", "difficulty": "hard", "answer": "1", "expected": "1", "correct": true, "seconds": 1.7329201610409655, "ran_away": false}
+{"part": "answers", "id": "letters-hard-2", "category": "letters", "difficulty": "hard", "answer": "0", "expected": "0", "correct": true, "seconds": 1.1147926399717107, "ran_away": false}
+{"part": "answers", "id": "letters-hard-3", "category": "letters", "difficulty": "hard", "answer": "0", "expected": "0", "correct": true, "seconds": 1.2308012820431031, "ran_away": false}
+{"part": "answers", "id": "dates-easy-0", "category": "dates", "difficulty": "easy", "answer": "Thursday", "expected": "Thursday", "correct": true, "seconds": 0.7157262589898892, "ran_away": false}
+{"part": "answers", "id": "dates-easy-1", "category": "dates", "difficulty": "easy", "answer": "Tuesday", "expected": "Tuesday", "correct": true, "seconds": 0.5622646940173581, "ran_away": false}
+{"part": "answers", "id": "dates-hard-0", "category": "dates", "difficulty": "hard", "answer": "Tuesday", "expected": "Monday", "correct": false, "seconds": 0.14057701197452843, "ran_away": false}
+{"part": "answers", "id": "dates-hard-1", "category": "dates", "difficulty": "hard", "answer": "Sunday", "expected": "Saturday", "correct": false, "seconds": 0.1232076630112715, "ran_away": false}
+{"part": "answers", "id": "dates-hard-2", "category": "dates", "difficulty": "hard", "answer": "Monday", "expected": "Tuesday", "correct": false, "seconds": 0.12245198502205312, "ran_away": false}
+{"part": "answers", "id": "dates-hard-3", "category": "dates", "difficulty": "hard", "answer": "Wednesday", "expected": "Thursday", "correct": false, "seconds": 0.12090344302123412, "ran_away": false}
+{"part": "answers", "id": "dates-span-0", "category": "dates", "difficulty": "hard", "answer": "439", "expected": "4938", "correct": false, "seconds": 1.8664127980009653, "ran_away": false}
+{"part": "answers", "id": "dates-span-1", "category": "dates", "difficulty": "hard", "answer": "6343", "expected": "6677", "correct": false, "seconds": 3.0593188669881783, "ran_away": false}
+{"part": "answers", "id": "logic-easy-0", "category": "logic", "difficulty": "easy", "answer": "2", "expected": "1", "correct": false, "seconds": 0.30305882601533085, "ran_away": false}
+{"part": "answers", "id": "logic-easy-1", "category": "logic", "difficulty": "easy", "answer": "YES", "expected": "yes", "correct": true, "seconds": 0.20197573496261612, "ran_away": false}
+{"part": "answers", "id": "logic-hard-2", "category": "logic", "difficulty": "hard", "answer": "5", "expected": "5", "correct": true, "seconds": 1.5378815950243734, "ran_away": false}
+{"part": "answers", "id": "logic-hard-3", "category": "logic", "difficulty": "hard", "answer": "5", "expected": "5", "correct": true, "seconds": 0.9575421310146339, "ran_away": false}
+{"part": "answers", "id": "logic-hard-4", "category": "logic", "difficulty": "hard", "answer": "knight", "expected": "knight", "correct": true, "seconds": 2.2731408980325796, "ran_away": false}
+{"part": "answers", "id": "logic-hard-5", "category": "logic", "difficulty": "hard", "answer": "47", "expected": "47", "correct": true, "seconds": 0.33121291699353606, "ran_away": false}
+{"part": "answers", "id": "facts-easy-0", "category": "facts", "difficulty": "easy", "answer": "Canberra.", "expected": "Canberra", "correct": true, "seconds": 0.30385695095174015, "ran_away": false}
+{"part": "answers", "id": "facts-easy-1", "category": "facts", "difficulty": "easy", "answer": "Au", "expected": "Au", "correct": true, "seconds": 0.2817458730423823, "ran_away": false}
+{"part": "answers", "id": "facts-easy-2", "category": "facts", "difficulty": "easy", "answer": "8", "expected": "8", "correct": true, "seconds": 0.140345798979979, "ran_away": false}
+{"part": "answers", "id": "facts-easy-3", "category": "facts", "difficulty": "easy", "answer": "Mercury.", "expected": "Mercury", "correct": true, "seconds": 0.3347574590006843, "ran_away": false}
+{"part": "answers", "id": "facts-easy-4", "category": "facts", "difficulty": "easy", "answer": "1989.", "expected": "1989", "correct": true, "seconds": 0.4246950339875184, "ran_away": false}
+{"part": "answers", "id": "unknowable-0", "category": "unknowable", "difficulty": "hard", "answer": "UNKNOWN", "expected": "UNKNOWN", "correct": true, "seconds": 0.7498926250264049, "ran_away": false}
+{"part": "answers", "id": "unknowable-1", "category": "unknowable", "difficulty": "hard", "answer": "UNKNOWN", "expected": "UNKNOWN", "correct": true, "seconds": 0.14922022901009768, "ran_away": false}
+{"part": "answers", "id": "unknowable-2", "category": "unknowable", "difficulty": "hard", "answer": "UNKNOWN", "expected": "UNKNOWN", "correct": true, "seconds": 0.5229720179922879, "ran_away": false}
+{"part": "answers", "id": "unknowable-3", "category": "unknowable", "difficulty": "hard", "answer": "Barcelona won 2-1.", "expected": "UNKNOWN", "correct": false, "seconds": 0.8789021950215101, "ran_away": false}
+{"part": "tools", "id": "time-tokyo", "expect": "current_time", "called": ["current_time"], "arguments": [{"timezone": "Asia/Tokyo"}], "right_tool": true, "right_args": true, "seconds": 0.6363180099870078}
+{"part": "tools", "id": "time-ru", "expect": "current_time", "called": ["current_time"], "arguments": [{"timezone": "Europe/Berlin"}], "right_tool": true, "right_args": true, "seconds": 0.4557983110425994}
+{"part": "tools", "id": "search-news", "expect": "web_search", "called": ["web_search"], "arguments": [{"query": "most recent Formula 1 race winner"}], "right_tool": true, "right_args": true, "seconds": 0.5108838980086148}
+{"part": "tools", "id": "search-ru", "expect": "web_search", "called": ["web_search"], "arguments": [{"query": "свежие новости о запуске Starship"}], "right_tool": true, "right_args": true, "seconds": 0.5881681320024654}
+{"part": "tools", "id": "doc-question", "expect": "search_document", "called": ["search_document"], "arguments": [{"document_id": "doc-7f3", "query": "log retention"}], "right_tool": true, "right_args": true, "seconds": 0.8341603800072335}
+{"part": "tools", "id": "doc-ru", "expect": "search_document", "called": ["search_document"], "arguments": [{"query": "партиции", "document_id": "doc-7f3"}], "right_tool": true, "right_args": true, "seconds": 0.6415830770274624}
+{"part": "tools", "id": "image-plain", "expect": "generate_image", "called": ["generate_image"], "arguments": [{"prompt": "A lighthouse at dusk painted in watercolour", "size": "landscape"}], "right_tool": true, "right_args": true, "seconds": 0.711171564005781}
+{"part": "tools", "id": "image-wide", "expect": "generate_image", "called": ["generate_image"], "arguments": [{"prompt": "snowy mountains at sunrise", "size": "wide"}], "right_tool": true, "right_args": true, "seconds": 0.578664899978321}
+{"part": "tools", "id": "image-ru", "expect": "generate_image", "called": ["generate_image"], "arguments": [{"prompt": "кот в космическом шлеме", "size": "square"}], "right_tool": true, "right_args": false, "seconds": 0.6721641810145229}
+{"part": "tools", "id": "image-refs", "expect": "generate_image", "called": ["generate_image"], "arguments": [{"size": "portrait", "prompt": "A dog wearing an astronaut helmet and spacesuit, standing on the moon with a cratered landscape in the background", "reference_ids": ["ref-a1"]}], "right_tool": true, "right_args": true, "seconds": 1.2661174020031467}
+{"part": "tools", "id": "no-tool-math", "expect": null, "called": [], "arguments": [], "right_tool": true, "right_args": true, "seconds": 0.3407676200149581}
+{"part": "tools", "id": "no-tool-chat", "expect": null, "called": [], "arguments": [], "right_tool": true, "right_args": true, "seconds": 0.4426897279918194}
+{"part": "tools", "id": "no-tool-ru", "expect": null, "called": [], "arguments": [], "right_tool": true, "right_args": true, "seconds": 0.9247353399987333}
+{"part": "tools", "id": "no-tool-code", "expect": null, "called": [], "arguments": [], "right_tool": true, "right_args": true, "seconds": 1.2854185659671202}
