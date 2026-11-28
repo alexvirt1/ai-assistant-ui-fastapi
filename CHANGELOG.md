@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-11-28
+
 **Fixed: replies could stay slow after other GPU work on AI-1.** When another client left an
 image model loaded in ComfyUI, the chat model loaded partly on the CPU (seen: 3.3 of 6.0 GB on the
 GPU) and every reply was several times slower until something reloaded it. Before a local turn the
