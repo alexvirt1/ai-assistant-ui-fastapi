@@ -87,15 +87,18 @@ async def search_document(document_id: str, question: str) -> str:
     # cudaMalloc out of memory. Raising here aborted the whole graph run and the
     # user got an empty reply. BM25 needs no model at all, so a failed embedding
     # costs ranking quality rather than the answer.
-    try:
-        if await image_service.chat_model_is_big():
-            # Same model, so the vectors match the stored ones; off the GPU so
-            # it does not evict a chat model that fills it.
-            embedder, _ = make_embedder(on_cpu=True)
-        query_vector = await embed_query(question, embedder)
-    except Exception as exc:
-        logger.warning("embedding the question failed (%s); using lexical search", exc)
-        query_vector = None
+    # A chat model that fills the GPU is evicted by any embedding call: measured
+    # on AI-1, even with num_gpu 0 Ollama unloaded qwen3.6 for the embedder
+    # (it keeps one model loaded), and reloading it took about 10 s. So beside a
+    # big model the question is matched by keywords (BM25) alone.
+    query_vector = None
+    if await image_service.chat_model_is_big():
+        logger.info("chat model fills the GPU; searching %s by keywords only", document_id)
+    else:
+        try:
+            query_vector = await embed_query(question, embedder)
+        except Exception as exc:
+            logger.warning("embedding the question failed (%s); using lexical search", exc)
 
     matches = hybrid_search(question, query_vector, stored, texts, top_k=TOP_K)
     if not matches:

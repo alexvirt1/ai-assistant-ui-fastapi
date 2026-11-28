@@ -137,7 +137,7 @@ def test_idle_reserve_default_is_measured(monkeypatch):
 
 
 @pytest.mark.parametrize("big", [True, False])
-async def test_document_question_embeds_on_the_cpu_beside_a_big_model(monkeypatch, big):
+async def test_document_question_skips_the_embedding_beside_a_big_model(monkeypatch, big):
     import types
     import uuid as uuidlib
 
@@ -175,5 +175,7 @@ async def test_document_question_embeds_on_the_cpu_beside_a_big_model(monkeypatc
     monkeypatch.setattr(ds, "embed_query", embed_query)
     monkeypatch.setattr(ds, "hybrid_search", lambda *a, **k: [])
     await ds.search_document.ainvoke({"document_id": str(uuidlib.uuid4()), "question": "retention?"})
-    assert used == [big]          # the question's embedding: CPU only beside a big model
-    assert made[0] is False       # indexing keeps the GPU
+    # Beside a big model: no embedding call at all (it would evict the model);
+    # keyword search only. Otherwise the usual GPU embedding.
+    assert used == ([] if big else [False])
+    assert made == [False]        # indexing keeps the GPU
