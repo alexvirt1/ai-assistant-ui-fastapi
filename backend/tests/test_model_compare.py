@@ -96,3 +96,16 @@ def test_long_prompt_size_is_about_right():
 def test_each_run_reads_a_different_prompt():
     first, second = (run.long_prompt(2000, run=i)[0]["content"] for i in (1, 2))
     assert first[:10] != second[:10]     # differs from the start: no cached prefix
+
+
+def test_placement_refused_or_recorded():
+    import pytest
+
+    def handler(request):
+        return httpx.Response(200, json={"models": [{"name": "big", "size": 12, "size_vram": 9}]})
+
+    backend = run.Ollama("big", 8192, base="http://x")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(SystemExit, match="only"):
+            run.check_placement(backend, client)
+        assert run.check_placement(backend, client, allow_cpu=True) == 0.75

@@ -160,19 +160,28 @@ class OpenAICompatible:
                      stopped_at_limit=finish == "length")
 
 
-def check_placement(backend, client) -> None:
-    """Stop if an Ollama model is partly on the CPU: its numbers would be meaningless.
+def check_placement(backend, client, allow_cpu: bool = False) -> float | None:
+    """The share of an Ollama model on the GPU; stop if part is on the CPU.
+
+    With allow_cpu (a model too big for the card, measured as it would run)
+    the share is returned instead. Otherwise a partial load means something
+    else holds the GPU and the numbers would be meaningless.
 
     Seen on the first baseline run: ComfyUI still held a model, qwen3:8b loaded
     3.3 of its 6.0 GB on the GPU, and every reply was several times slower.
     """
     if not isinstance(backend, Ollama):
-        return
+        return None
     models = client.get(f"{backend.base}/api/ps").json().get("models") or []
     for model in models:
-        if model["name"] == backend.tag and model.get("size_vram", 0) < model.get("size", 0):
+        if model["name"] != backend.tag:
+            continue
+        share = model.get("size_vram", 0) / max(model.get("size", 1), 1)
+        if share < 1 and not allow_cpu:
             raise SystemExit(f"{backend.tag} is only {model['size_vram'] / 1e9:.1f} of "
                              f"{model['size'] / 1e9:.1f} GB on the GPU; free the GPU and rerun.")
+        return share
+    return None
 
 
 def backend_from(spec: str, num_ctx: int):
@@ -207,10 +216,12 @@ WRITE_PROMPT = [{"role": "user", "content":
                  "message in a bottle. Plain prose, no title."}]
 
 
-def run_speed(backend, client, repeat: int, sizes: list[int]) -> list[dict]:
+def run_speed(backend, client, repeat: int, sizes: list[int], allow_cpu: bool = False) -> list[dict]:
     rows = []
     backend.chat(client, [{"role": "user", "content": "Say OK."}], max_tokens=4)   # load it
-    check_placement(backend, client)
+    share = check_placement(backend, client, allow_cpu)
+    if share is not None:
+        rows.append({"part": "speed", "test": "placement", "gpu_share": share})
     for i in range(repeat):
         reply = backend.chat(client, WRITE_PROMPT, max_tokens=450)
         rows.append({"part": "speed", "test": "write", "run": i,
@@ -345,6 +356,7 @@ def summarise(label: str, rows: list[dict]) -> dict:
     out = {"label": label}
     speed = [r for r in rows if r["part"] == "speed"]
     if speed:
+        out["gpu_share_pct"] = median(100 * r["gpu_share"] for r in speed if r["test"] == "placement")
         out["write_tok_s"] = median(r["write_tok_s"] for r in speed if r["test"] == "write")
         out["first_token_s"] = median(r["first_token_s"] for r in speed if r["test"] == "write")
         for test in sorted({r["test"] for r in speed if r["test"].startswith("read-")},
@@ -398,6 +410,8 @@ def main(argv=None) -> None:
     parser.add_argument("--long", default="", help="extra prompt sizes, e.g. 16000,30000")
     parser.add_argument("--limit", type=int, default=0, help="only the first N questions")
     parser.add_argument("--timeout", type=float, default=900)
+    parser.add_argument("--allow-cpu", action="store_true",
+                        help="measure an Ollama model even if part of it is on the CPU")
     parser.add_argument("--report", nargs="+", metavar="RESULTS.jsonl[=LABEL]")
     args = parser.parse_args(argv)
 
@@ -417,7 +431,7 @@ def main(argv=None) -> None:
             print(f"== {backend.label}", file=sys.stderr, flush=True)
             rows = []
             if "speed" in parts:
-                rows += run_speed(backend, client, args.repeat, sizes)
+                rows += run_speed(backend, client, args.repeat, sizes, args.allow_cpu)
             if "answers" in parts:
                 rows += run_answers(backend, client, args.limit)
             if "tools" in parts:
