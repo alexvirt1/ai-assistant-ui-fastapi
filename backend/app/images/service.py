@@ -18,6 +18,7 @@ model is only needed again after the last one.
 
 import asyncio
 import dataclasses
+from dataclasses import dataclass
 import logging
 import os
 import random
@@ -57,6 +58,39 @@ _pending = 0
 # a GPU that is genuinely too full can't make every turn wait for a reload.
 HEAL_INTERVAL = float(os.getenv("CHAT_MODEL_HEAL_INTERVAL", "300"))
 _last_heal = float("-inf")
+
+# What each chat model took in memory when last seen resident (it depends on
+# num_ctx), so the hand-back can wait for as much free VRAM as it needs.
+_model_sizes: dict[str, int] = {}
+
+
+def fit_margin_bytes() -> int:
+    """VRAM Ollama wants free beyond a model's size to put all of it on the GPU.
+
+    qwen3:8b (7065 MiB at 24576) needed about 8.96 GB free: llama.cpp's 1 GiB
+    fit margin plus its 457 MiB minimum.
+    """
+    return int(float(os.getenv("CHAT_MODEL_FIT_MARGIN_BYTES", str(1.6e9))))
+
+
+# Not yet seen resident: its file plus room for the context (qwen3:8b: a
+# 5.2 GB file took 5.7 GB at num_ctx 8192).
+CONTEXT_ALLOWANCE = 0.8e9
+
+
+async def chat_model_size(tag: str) -> int | None:
+    """What `tag` takes in memory: as last seen resident, else estimated from its file."""
+    if tag in _model_sizes:
+        return _model_sizes[tag]
+    on_disk = await ollama.disk_size(tag)
+    return int(on_disk + CONTEXT_ALLOWANCE) if on_disk else None
+
+
+async def handback_needed(tag: str) -> int:
+    """Free VRAM to wait for before reloading `tag` (capped in comfyui by the card)."""
+    size = await chat_model_size(tag)
+    floor = comfyui.handback_free_bytes()
+    return max(floor, size + fit_margin_bytes()) if size else floor
 
 
 async def load_references(reference_ids: list[str], thread_id: str, user_id: str) -> list:
@@ -182,6 +216,7 @@ async def _captions(refs: list) -> list[str | None]:
 
 async def _unload_chat_models() -> None:
     for model in await ollama.resident():
+        _model_sizes[model.tag] = model.size_bytes
         if not await ollama.unload(model.tag):
             logger.warning("could not unload %s before generating an image", model.tag)
 
@@ -202,7 +237,7 @@ async def _return_gpu_to_chat() -> None:
     # Twice at most: a model loaded while memory was still short stays partly
     # on the CPU until it is unloaded, so check and reload once.
     for attempt in (1, 2):
-        if not await comfyui.wait_until_released():
+        if not await comfyui.wait_until_released(needed=await handback_needed(tag)):
             logger.warning("ComfyUI did not release GPU memory in time; the chat model "
                            "may load partly on the CPU")
         await ollama.warm(tag, num_ctx)
@@ -219,6 +254,56 @@ async def _return_gpu_to_chat() -> None:
             "Lower OLLAMA_NUM_CTX or free GPU memory on the Ollama host.",
             tag, share, model.vram_bytes // 2**20, model.size_bytes // 2**20,
         )
+
+
+# --- chat turns while AI-1 holds a reservation --------------------------------
+
+# A chat model this large fills the card (qwen3.6 35B-A3B: 11.5 GB of 12).
+BIG_CHAT_MODEL_BYTES = int(float(os.getenv("BIG_CHAT_MODEL_BYTES", str(8e9))))
+
+
+@dataclass(frozen=True)
+class ReservedPlan:
+    """How a local turn runs while AI-1 holds the GPU and the chat model is big."""
+    action: str              # "cpu": answer with a small model on the CPU; "busy": don't answer
+    note: str                # shown above the answer
+    model: str | None = None
+    num_gpu: int = 0
+    num_thread: int | None = None
+
+
+async def reserved_gpu_plan() -> ReservedPlan | None:
+    """None if the turn may load the chat model as usual.
+
+    Agreed with the AI-1 agent: a big chat model is never loaded on the GPU
+    while AI-1 holds a valid reservation. Loading 11.5 GB beside its running
+    job would make the job run out of memory, or put the model mostly on the
+    CPU. RESERVED_GPU_CHAT picks what happens instead: "cpu" (default) answers
+    with RESERVED_GPU_FALLBACK_MODEL with no GPU layers; "busy" says local chat
+    is unavailable until the reservation ends. A small chat model (qwen3:8b)
+    keeps the old behaviour, and so does a big one already fully loaded.
+    """
+    try:
+        held = await comfyui.reservation()
+        if held is None:
+            return None
+        tag = current_tag()
+        size = await chat_model_size(tag)
+        if not size or size < BIG_CHAT_MODEL_BYTES:
+            return None
+        if any(m.tag == tag and m.fully_on_gpu for m in await ollama.resident()):
+            return None
+    except Exception:
+        logger.exception("could not check AI-1's reservation before a chat turn")
+        return None
+    if os.getenv("RESERVED_GPU_CHAT", "cpu").strip().lower() == "busy":
+        return ReservedPlan("busy", f"_{held.describe()}. The local chat model needs the whole "
+                                    "GPU, so it can't answer until then. Please try again later._")
+    fallback = os.getenv("RESERVED_GPU_FALLBACK_MODEL", "qwen3:8b").strip()
+    threads = int(os.getenv("RESERVED_GPU_CPU_THREADS", "6"))
+    return ReservedPlan("cpu", f"_{held.describe()}, so {fallback} answers on the CPU; "
+                               "this is slower than usual._\n\n",
+                        model=fallback, num_gpu=0, num_thread=threads)
 
 
 async def heal_chat_model() -> bool:
@@ -244,6 +329,7 @@ async def heal_chat_model() -> bool:
         model = next((m for m in await ollama.resident() if m.tag == tag), None)
         if model is None or model.fully_on_gpu:
             return False
+        _model_sizes[tag] = model.size_bytes
         if time.monotonic() - _last_heal < HEAL_INTERVAL:
             return False
         if await comfyui.reservation() is not None or await comfyui.queue_busy():

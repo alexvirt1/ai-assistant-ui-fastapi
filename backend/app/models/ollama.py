@@ -51,6 +51,25 @@ async def list_available() -> list[str]:
     return sorted({m["name"] for m in data.get("models", [])})
 
 
+_DISK_SIZES: dict[str, int] = {}
+
+
+async def disk_size(tag: str) -> int | None:
+    """A model's file size from /api/tags (kept per process), or None."""
+    if tag in _DISK_SIZES:
+        return _DISK_SIZES[tag]
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(f"{BASE_URL}/api/tags")
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+    for model in models:
+        _DISK_SIZES[model["name"]] = int(model.get("size", 0))
+    return _DISK_SIZES.get(tag)
+
+
 # Capabilities of a tag do not change while it exists, and the model picker
 # asks for every tag at once, so a successful answer is kept for the process.
 _CAPABILITIES: dict[str, frozenset[str]] = {}

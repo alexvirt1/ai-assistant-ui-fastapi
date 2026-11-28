@@ -524,6 +524,16 @@ def handback_free_bytes() -> int:
     return int(float(os.getenv("IMAGE_HANDBACK_FREE_BYTES", str(9.5e9))))
 
 
+def idle_reserve_bytes() -> int:
+    """VRAM other processes can never have, even with ComfyUI empty (its CUDA context).
+
+    Caps a hand-back target, so a chat model as large as the card (qwen3.6
+    35B-A3B, 11.5 GB of 12) waits for "ComfyUI holds nothing" rather than for
+    more than the card can ever offer.
+    """
+    return int(float(os.getenv("GPU_IDLE_RESERVE_BYTES", str(0.6e9))))
+
+
 def free_for_others(device: dict) -> int:
     """GPU memory another process (Ollama) could use now.
 
@@ -536,7 +546,8 @@ def free_for_others(device: dict) -> int:
 
 
 async def wait_until_released(client: httpx.AsyncClient | None = None,
-                              timeout: float | None = None) -> bool:
+                              timeout: float | None = None,
+                              needed: int | None = None) -> bool:
     """Wait after free_memory() until the GPU has room for the chat model.
 
     Without this the chat model can reload while the image model still holds
@@ -545,7 +556,7 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
     True once there is room, False on timeout or error (callers carry on).
     """
     timeout = RELEASE_TIMEOUT if timeout is None else timeout
-    needed = handback_free_bytes()
+    needed = handback_free_bytes() if needed is None else needed
     owns_client = client is None
     client = client or httpx.AsyncClient(base_url=base_url(), timeout=10)
     started = time.monotonic()
@@ -556,8 +567,11 @@ async def wait_until_released(client: httpx.AsyncClient | None = None,
             resp = await client.get("/system_stats")
             resp.raise_for_status()
             devices = resp.json().get("devices") or []
-            if devices and free_for_others(devices[0]) >= needed:
-                return True
+            if devices:
+                total = int(devices[0].get("vram_total", 0))
+                target = min(needed, total - idle_reserve_bytes()) if total else needed
+                if free_for_others(devices[0]) >= target:
+                    return True
             if time.monotonic() > deadline:
                 return False
             # ComfyUI acts on /free between jobs, about 10 s after the last one

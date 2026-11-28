@@ -335,8 +335,12 @@ def fake_service(monkeypatch):
         calls["freed"] = True
         calls["handbacks"] = calls.get("handbacks", 0) + 1
 
-    async def released():
+    async def released(needed=None):
+        calls["needed"] = needed
         return True
+
+    async def disk_size(tag):
+        return None
 
     async def warm(tag, num_ctx=None):
         calls["warmed"] = (tag, num_ctx)
@@ -370,6 +374,8 @@ def fake_service(monkeypatch):
     monkeypatch.setattr(service.comfyui, "generate", generate)
     monkeypatch.setattr(service.comfyui, "free_memory", free_memory)
     monkeypatch.setattr(service.comfyui, "wait_until_released", released)
+    monkeypatch.setattr(service.ollama, "disk_size", disk_size)
+    monkeypatch.setattr(service, "_model_sizes", {})
 
     async def no_reservation():
         return calls.get("reservation")

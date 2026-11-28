@@ -185,3 +185,18 @@ async def test_agent_follows_the_selection():
     assert select_model({}, None).model == "qwen3:8b"
     await selection.select("gemma4")
     assert select_model({}, None).model == "gemma4:26b-a4b-it-q4_K_M"
+
+
+def test_selector_uses_the_reservation_fallback_on_the_cpu(monkeypatch):
+    """During AI-1's reservation a big chat model is swapped, for the turn, for a
+    small one with no GPU layers (images/service.reserved_gpu_plan)."""
+    from app.langgraph import agent
+    from app.langgraph.agent import make_model_selector
+
+    route = {"local_model": "qwen3:8b", "local_num_gpu": 0, "local_num_thread": 6}
+    monkeypatch.setattr(agent, "turn_route", lambda: route)
+    model = make_model_selector([])({}, None)
+    assert (model.model, model.num_gpu, model.num_thread) == ("qwen3:8b", 0, 6)
+    monkeypatch.setattr(agent, "turn_route", lambda: {})
+    usual = make_model_selector([])({}, None)
+    assert usual.num_gpu is None

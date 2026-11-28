@@ -103,10 +103,14 @@ def make_model_selector(tools: list):
             if key not in bound:
                 bound[key] = cloud_models.make_chat_model(route["cloud_model"]).bind_tools(chosen)
             return bound[key]
-        tag = current_tag()
-        key = (tag, names)
+        # During AI-1's reservation a big chat model is replaced for the turn
+        # by a small one on the CPU (images/service.reserved_gpu_plan).
+        tag = route.get("local_model") or current_tag()
+        extra = {k: route[f"local_{k}"] for k in ("num_gpu", "num_thread")
+                 if route.get(f"local_{k}") is not None}
+        key = (tag, names, tuple(sorted(extra.items())))
         if key not in bound:
-            bound[key] = make_chat_model(DEFAULT_ROLE, model=tag).bind_tools(chosen)
+            bound[key] = make_chat_model(DEFAULT_ROLE, model=tag, **extra).bind_tools(chosen)
         return bound[key]
 
     return select_model

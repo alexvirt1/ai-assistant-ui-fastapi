@@ -413,6 +413,13 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
                 logger.exception("could not resolve documents for %s", thread_id)
         route, route_note = await decide_route(request, thread_id, user_id)
         to_cloud = route["answer_with"] == "cloud"
+        # AI-1 holds the GPU and the chat model would need all of it: answer on
+        # the CPU with a small model, or not at all (images/service.py).
+        reserved = None if to_cloud else await image_service.reserved_gpu_plan()
+        if reserved is not None and reserved.action == "cpu":
+            route.update(local_model=reserved.model, local_num_gpu=reserved.num_gpu,
+                         local_num_thread=reserved.num_thread)
+            route_note = (route_note or "") + reserved.note
         references = await load_thread_references(thread_id, user_id)
         reference_block = render_reference_block(references)
         if to_cloud and route.get("allow_documents") and references:
@@ -591,6 +598,9 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
             asyncio.create_task(note_reservation_conflict(thread_id))
             heartbeat = asyncio.create_task(keep_alive(controller))
             try:
+                if reserved is not None and reserved.action == "busy":
+                    controller.append_text(reserved.note)
+                    return
                 if not to_cloud:
                     # A chat model left partly on the CPU makes this reply
                     # several times slower; reload it first if so.

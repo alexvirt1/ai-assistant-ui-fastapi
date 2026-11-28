@@ -154,3 +154,44 @@ class TestHealBeforeALocalTurn:
         monkeypatch.setattr(image_service, "heal_chat_model", heal)
         assert "Hi" in post(client_for(Recording()))
         assert order == ["heal", "model"]
+
+
+class TestDuringAI1Reservation:
+    def plan(self, monkeypatch, plan):
+        from app.images import service as image_service
+
+        async def reserved_gpu_plan():
+            return plan
+
+        async def heal():
+            return False
+
+        monkeypatch.setattr(image_service, "reserved_gpu_plan", reserved_gpu_plan)
+        monkeypatch.setattr(image_service, "heal_chat_model", heal)
+
+    def test_busy_answers_with_the_note_only(self, monkeypatch):
+        from app.images.service import ReservedPlan
+
+        class Untouchable(FakeGraph):
+            async def astream(self, *args, **kwargs):
+                raise AssertionError("the model must not run")
+                yield  # pragma: no cover
+
+        self.plan(monkeypatch, ReservedPlan("busy", "_GPU reserved until 13:00._"))
+        assert "GPU reserved until 13:00" in post(client_for(Untouchable()))
+
+    def test_cpu_plan_reaches_the_model_selector(self, monkeypatch):
+        from app.images.service import ReservedPlan
+
+        seen = {}
+
+        class Recording(FakeGraph):
+            async def astream(self, graph_input, config=None, **kwargs):
+                seen.update((config or {}).get("configurable", {}))
+                yield AIMessageChunk(content="Hi"), {}
+
+        self.plan(monkeypatch, ReservedPlan("cpu", "_On the CPU._\n\n", model="qwen3:8b",
+                                            num_gpu=0, num_thread=6))
+        text = post(client_for(Recording()))
+        assert "On the CPU" in text and "Hi" in text
+        assert (seen["local_model"], seen["local_num_gpu"], seen["local_num_thread"]) == ("qwen3:8b", 0, 6)
