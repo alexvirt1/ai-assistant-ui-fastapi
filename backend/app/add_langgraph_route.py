@@ -26,6 +26,7 @@ from .chats.messages import content_to_text
 from .identity import current_user_id
 from .cloud import models as cloud_models
 from .cloud import usage as cloud_usage
+from .images import service as image_service
 from .images.comfyui import reservation as comfyui_reservation
 from .references import store as reference_store
 from .langgraph.agent import render_document_block, render_reference_block
@@ -590,6 +591,10 @@ def add_langgraph_route(app: FastAPI, graph, path: str):
             asyncio.create_task(note_reservation_conflict(thread_id))
             heartbeat = asyncio.create_task(keep_alive(controller))
             try:
+                if not to_cloud:
+                    # A chat model left partly on the CPU makes this reply
+                    # several times slower; reload it first if so.
+                    await image_service.heal_chat_model()
                 await run_turn(controller)
             finally:
                 heartbeat.cancel()

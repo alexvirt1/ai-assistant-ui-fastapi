@@ -21,6 +21,7 @@ import dataclasses
 import logging
 import os
 import random
+import time
 import uuid
 from io import BytesIO
 
@@ -51,6 +52,11 @@ MAX_PROMPT_CHARS = 2000
 _lock = asyncio.Lock()
 # Images waiting for or holding the lock. The last one out hands the GPU back.
 _pending = 0
+
+# Self-heal (heal_chat_model): at most one attempt per this many seconds, so
+# a GPU that is genuinely too full can't make every turn wait for a reload.
+HEAL_INTERVAL = float(os.getenv("CHAT_MODEL_HEAL_INTERVAL", "300"))
+_last_heal = float("-inf")
 
 
 async def load_references(reference_ids: list[str], thread_id: str, user_id: str) -> list:
@@ -213,6 +219,46 @@ async def _return_gpu_to_chat() -> None:
             "Lower OLLAMA_NUM_CTX or free GPU memory on the Ollama host.",
             tag, share, model.vram_bytes // 2**20, model.size_bytes // 2**20,
         )
+
+
+async def heal_chat_model() -> bool:
+    """Reload the chat model if it sits partly on the CPU. True if it tried.
+
+    Seen 2026-11-27: an image model left loaded in ComfyUI by other work on
+    AI-1 held ~7 GB, so qwen3:8b loaded 3.3 of its 6.0 GB on the GPU and every
+    reply was several times slower, until something reloaded it. Our own
+    image jobs hand the GPU back (_return_gpu_to_chat); this covers whoever
+    else left a model there. Called before a local chat turn.
+
+    Does nothing while an image job of ours runs (it unloads the chat model on
+    purpose), during AI-1's reservation (no Ollama load or unload calls then,
+    as agreed), while another client's ComfyUI job runs (freeing would not
+    work, and the wait would stall the reply), or more than once per
+    HEAL_INTERVAL. Never raises: the turn goes ahead either way.
+    """
+    global _last_heal
+    try:
+        if not comfyui.base_url() or _pending or _lock.locked():
+            return False
+        tag = current_tag()
+        model = next((m for m in await ollama.resident() if m.tag == tag), None)
+        if model is None or model.fully_on_gpu:
+            return False
+        if time.monotonic() - _last_heal < HEAL_INTERVAL:
+            return False
+        if await comfyui.reservation() is not None or await comfyui.queue_busy():
+            return False
+        _last_heal = time.monotonic()
+        share = 100 * model.vram_bytes // max(model.size_bytes, 1)
+        logger.warning("chat model was partly on CPU (%s %d%% on the GPU); freeing ComfyUI "
+                       "and reloading it", tag, share)
+        async with _lock:
+            await ollama.unload(tag)
+            await _return_gpu_to_chat()
+        return True
+    except Exception:
+        logger.exception("could not check or heal the chat model's GPU placement")
+        return False
 
 
 def _check_png(png: bytes) -> None:
