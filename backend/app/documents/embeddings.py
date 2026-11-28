@@ -41,14 +41,24 @@ RETRIEVAL_CHUNK_TOKENS = 400
 RETRIEVAL_OVERLAP_TOKENS = 60
 
 
-def make_embedder(role: str = EMBED_ROLE) -> tuple[OllamaEmbeddings, str]:
+def make_embedder(role: str = EMBED_ROLE, *, on_cpu: bool = False) -> tuple[OllamaEmbeddings, str]:
+    """The embedding model; `on_cpu` keeps it off the GPU (num_gpu 0).
+
+    Used for a question's embedding while a chat model fills the GPU: measured
+    on AI-1, loading qwen3-embedding:0.6b on the GPU beside qwen3.6 35B-A3B
+    evicted the chat model (22 s), which then took 10.5 s to reload - about
+    33 s added to every document question. One short question on the CPU costs
+    far less. Indexing a document still uses the GPU.
+    """
     import os
 
     tag = get_tag(role)
+    extra = {"num_gpu": 0} if on_cpu else {}
     return (
         OllamaEmbeddings(
             model=tag,
             base_url=os.getenv("OLLAMA_BASE_URL", "http://192.168.87.160:11434"),
+            **extra,
         ),
         tag,
     )

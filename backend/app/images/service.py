@@ -272,15 +272,25 @@ class ReservedPlan:
     num_thread: int | None = None
 
 
+async def chat_model_is_big() -> bool:
+    """Whether the chat model fills the GPU, so nothing else fits beside it."""
+    try:
+        size = await chat_model_size(current_tag())
+    except Exception:
+        return False
+    return bool(size and size >= BIG_CHAT_MODEL_BYTES)
+
+
 async def reserved_gpu_plan() -> ReservedPlan | None:
     """None if the turn may load the chat model as usual.
 
     Agreed with the AI-1 agent: a big chat model is never loaded on the GPU
     while AI-1 holds a valid reservation. Loading 11.5 GB beside its running
     job would make the job run out of memory, or put the model mostly on the
-    CPU. RESERVED_GPU_CHAT picks what happens instead: "cpu" (default) answers
-    with RESERVED_GPU_FALLBACK_MODEL with no GPU layers; "busy" says local chat
-    is unavailable until the reservation ends. A small chat model (qwen3:8b)
+    CPU. RESERVED_GPU_CHAT picks what happens instead: "busy" (default) says
+    local chat is unavailable until the reservation ends; "cpu" answers with
+    RESERVED_GPU_FALLBACK_MODEL with no GPU layers. Measured on AI-1's Xeon:
+    qwen3:8b on the CPU writes 3.7 tok/s, too slow to be the default. A small chat model (qwen3:8b)
     keeps the old behaviour, and so does a big one already fully loaded.
     """
     try:
@@ -296,7 +306,7 @@ async def reserved_gpu_plan() -> ReservedPlan | None:
     except Exception:
         logger.exception("could not check AI-1's reservation before a chat turn")
         return None
-    if os.getenv("RESERVED_GPU_CHAT", "cpu").strip().lower() == "busy":
+    if os.getenv("RESERVED_GPU_CHAT", "busy").strip().lower() != "cpu":
         return ReservedPlan("busy", f"_{held.describe()}. The local chat model needs the whole "
                                     "GPU, so it can't answer until then. Please try again later._")
     fallback = os.getenv("RESERVED_GPU_FALLBACK_MODEL", "qwen3:8b").strip()

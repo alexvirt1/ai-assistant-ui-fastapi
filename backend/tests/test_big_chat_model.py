@@ -38,15 +38,15 @@ async def test_a_model_not_seen_yet_is_estimated_from_its_file(sizes):
     assert await service.handback_needed("unknown") == int(9.5e9)
 
 
-def stats(free_for_others, total=12.4 * GB):
+def stats(free_for_others, total=12.49 * GB):
     return {"devices": [{"vram_total": int(total), "vram_free": int(free_for_others),
                          "torch_vram_free": 0}]}
 
 
 async def test_wait_target_is_capped_by_an_empty_card():
-    # 13.1 GB wanted on a 12.4 GB card: "ComfyUI holds nothing" is enough.
+    # 13.1 GB wanted on a 12.49 GB card: "ComfyUI holds nothing" is enough.
     def handler(request):
-        return httpx.Response(200, json=stats(11.9 * GB))
+        return httpx.Response(200, json=stats(12.16 * GB))   # measured: ComfyUI empty
 
     async with httpx.AsyncClient(base_url="http://comfy",
                                  transport=httpx.MockTransport(handler)) as client:
@@ -84,15 +84,16 @@ def reserved(monkeypatch, sizes):
     return state
 
 
-async def test_big_model_answers_from_the_cpu_with_a_small_one(reserved):
+async def test_big_model_answers_from_the_cpu_with_a_small_one(reserved, monkeypatch):
+    monkeypatch.setenv("RESERVED_GPU_CHAT", "cpu")
     plan = await service.reserved_gpu_plan()
     assert plan.action == "cpu" and plan.model == "qwen3:8b"
     assert plan.num_gpu == 0 and plan.num_thread == 6
     assert "reserved by ai-1" in plan.note and "on the CPU" in plan.note
 
 
-async def test_busy_mode_says_so(reserved, monkeypatch):
-    monkeypatch.setenv("RESERVED_GPU_CHAT", "busy")
+async def test_busy_by_default(reserved):
+    # qwen3:8b on AI-1's CPU writes 3.7 tok/s: too slow to answer with.
     plan = await service.reserved_gpu_plan()
     assert plan.action == "busy" and "can't answer until then" in plan.note
 
@@ -114,3 +115,65 @@ async def test_errors_fall_back_to_the_usual_turn(reserved, monkeypatch):
 
     monkeypatch.setattr(comfyui, "reservation", broken)
     assert await service.reserved_gpu_plan() is None
+
+
+async def test_chat_model_is_big(reserved):
+    assert await service.chat_model_is_big()
+    reserved["tag"] = "qwen3:8b"
+    assert not await service.chat_model_is_big()
+
+
+def test_question_embedder_can_stay_off_the_gpu():
+    from app.documents.embeddings import make_embedder
+
+    on_cpu, tag = make_embedder(on_cpu=True)
+    usual, same_tag = make_embedder()
+    assert on_cpu.num_gpu == 0 and usual.num_gpu is None and tag == same_tag
+
+
+def test_idle_reserve_default_is_measured(monkeypatch):
+    monkeypatch.delenv("GPU_IDLE_RESERVE_BYTES", raising=False)
+    assert comfyui.idle_reserve_bytes() == int(0.4e9)
+
+
+@pytest.mark.parametrize("big", [True, False])
+async def test_document_question_embeds_on_the_cpu_beside_a_big_model(monkeypatch, big):
+    import types
+    import uuid as uuidlib
+
+    from app.tools import document_search as ds
+
+    made = []
+
+    def make_embedder(role="embedding", *, on_cpu=False):
+        made.append(on_cpu)
+        return types.SimpleNamespace(on_cpu=on_cpu), "qwen3-embedding:0.6b"
+
+    async def chat_model_is_big():
+        return big
+
+    async def get_document(doc_id):
+        return types.SimpleNamespace(name="kafka.pdf")
+
+    async def nothing(*a, **k):
+        return None
+
+    async def chunks(doc_id, model):
+        return [object()], ["text"]
+
+    used = []
+
+    async def embed_query(question, embedder):
+        used.append(embedder.on_cpu)
+        return [0.1]
+
+    monkeypatch.setattr(ds, "make_embedder", make_embedder)
+    monkeypatch.setattr(ds.image_service, "chat_model_is_big", chat_model_is_big)
+    monkeypatch.setattr(ds, "get_document", get_document)
+    monkeypatch.setattr(ds, "ensure_indexed", nothing)
+    monkeypatch.setattr(ds, "load_retrieval_chunks", chunks)
+    monkeypatch.setattr(ds, "embed_query", embed_query)
+    monkeypatch.setattr(ds, "hybrid_search", lambda *a, **k: [])
+    await ds.search_document.ainvoke({"document_id": str(uuidlib.uuid4()), "question": "retention?"})
+    assert used == [big]          # the question's embedding: CPU only beside a big model
+    assert made[0] is False       # indexing keeps the GPU

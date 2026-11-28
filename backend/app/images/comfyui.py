@@ -531,7 +531,9 @@ def idle_reserve_bytes() -> int:
     35B-A3B, 11.5 GB of 12) waits for "ComfyUI holds nothing" rather than for
     more than the card can ever offer.
     """
-    return int(float(os.getenv("GPU_IDLE_RESERVE_BYTES", str(0.6e9))))
+    # Measured on AI-1 (2026-11-28): 12.49 GB card, 12.16 GB free for others
+    # with ComfyUI empty.
+    return int(float(os.getenv("GPU_IDLE_RESERVE_BYTES", str(0.4e9))))
 
 
 def free_for_others(device: dict) -> int:
