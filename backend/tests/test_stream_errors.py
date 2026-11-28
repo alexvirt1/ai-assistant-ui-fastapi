@@ -134,3 +134,23 @@ class TestOneTurnPerChat:
         monkeypatch.setattr(route, "ACTIVE_TURNS", set())
         self.post_to(client_for(FakeGraph(error=RuntimeError("boom"))), "c2")
         assert route.ACTIVE_TURNS == set()
+
+
+class TestHealBeforeALocalTurn:
+    def test_a_local_turn_checks_the_chat_model_first(self, monkeypatch):
+        from app.images import service as image_service
+
+        order = []
+
+        async def heal():
+            order.append("heal")
+            return False
+
+        class Recording(FakeGraph):
+            async def astream(self, *args, **kwargs):
+                order.append("model")
+                yield AIMessageChunk(content="Hi"), {}
+
+        monkeypatch.setattr(image_service, "heal_chat_model", heal)
+        assert "Hi" in post(client_for(Recording()))
+        assert order == ["heal", "model"]

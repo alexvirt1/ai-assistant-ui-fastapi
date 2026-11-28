@@ -140,6 +140,14 @@ other processes, measured as `vram_free - torch_vram_free` from ComfyUI's
 `/system_stats`. If it still lands partly on the CPU, it is unloaded and loaded
 once more.
 
+**Self-heal.** Before a local chat turn, if the chat model is resident but
+partly on the CPU (something else, such as another ComfyUI client, left a
+model on the GPU), the app frees ComfyUI, waits for the hand-back threshold
+and reloads the chat model once, logging "chat model was partly on CPU". It
+does nothing during AI-1's reservation, during our own image jobs, while
+another client's ComfyUI job runs, or more than once per
+`CHAT_MODEL_HEAL_INTERVAL` seconds (default 300).
+
 **Sharing the GPU host with its owner.** The AI-1 agent can reserve the GPU by
 writing ComfyUI userdata `gpu-reservation.json`
 (`{"holder": "ai-1", "until": "2026-11-21T18:00:00Z", "reason": "..."}`, UTC).
