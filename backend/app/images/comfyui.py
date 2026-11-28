@@ -295,6 +295,17 @@ def _is_ours(item) -> bool:
         return False
 
 
+async def queue_busy() -> bool:
+    """Whether another client's job is running or waiting; True if ComfyUI can't be asked."""
+    if not base_url():
+        return False
+    try:
+        async with httpx.AsyncClient(base_url=base_url(), timeout=10) as client:
+            return await _queue_busy(client)
+    except (httpx.HTTPError, ValueError):
+        return True
+
+
 async def _queue_busy(client: httpx.AsyncClient) -> bool:
     """Whether ComfyUI has someone else's work running or waiting.
 
